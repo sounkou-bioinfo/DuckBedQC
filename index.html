@@ -141,7 +141,7 @@
             </div>
         </div>
         <div class="col-lg-8 mx-auto text-danger pt-2" id="file-size-warning" hidden></div>
-        <div class="col-lg-8 mx-auto text-muted small pt-2" id="runtime-status">Browser DuckDB backend starts on first overlap analysis.</div>
+        <div class="col-lg-8 mx-auto text-muted small pt-2" id="runtime-status">Browser DuckDB backend prepares after upload and is used for overlap analyses.</div>
     </div>
 
     <div id="introduction">
@@ -414,6 +414,7 @@
         webR: null,
         shelter: null,
         ready: false,
+        preferredThreads: 1,
         stagedAnnotations: new Set(),
         genomeChromosomeLengths: new Map(),
     };
@@ -630,6 +631,18 @@ CASE
 END
 `;
 
+    const detect_preferred_duckdb_threads = () => {
+        const cores = Math.floor(Number(globalThis.navigator?.hardwareConcurrency || 1));
+        if (!Number.isFinite(cores) || cores < 2) {
+            return 1;
+        }
+        // Browser WASM threads require cross-origin isolation and SharedArrayBuffer.
+        if (globalThis.crossOriginIsolated !== true) {
+            return 1;
+        }
+        return Math.min(cores, 8);
+    };
+
     const is_primary_plot_chromosome = (chrom) => chrom.match(/fix|random|alt|Un|hap/g) === null;
 
     const escape_r_string = (value) => value
@@ -686,11 +699,16 @@ END
             await webR.installPackages(["Rduckhts"], { repos: ["https://rgenomicsetl.r-universe.dev", "https://repo.r-wasm.org/"], mount: false });
 
             duckBackend.shelter = await new webR.Shelter();
+            duckBackend.preferredThreads = detect_preferred_duckdb_threads();
             update_operation_detail("Opening browser DuckDB connection...");
             await run_r("library(DBI)");
             await run_r("library(duckdb)");
             await run_r("library(Rduckhts)");
             await run_r("con <- DBI::dbConnect(duckdb::duckdb(config = list(allow_unsigned_extensions = 'true')))");
+            if (duckBackend.preferredThreads > 1) {
+                update_operation_detail(`Configuring DuckDB to use up to ${duckBackend.preferredThreads} browser threads...`);
+                await execute_sql(`PRAGMA threads=${duckBackend.preferredThreads}`);
+            }
             update_operation_detail("Loading the duckhts extension into DuckDB...");
             await run_r("rduckhts_load(con)");
             duckBackend.ready = true;
@@ -794,9 +812,20 @@ END
         return staged;
     };
 
-    const query_overlap_counts = async (annotationTable, distinctIntervals = false) => {
+    const query_overlap_counts = async (annotationTable, overlapMode = "count_all") => {
         const outputPath = "/duckbedqc/query/overlap_counts.tsv";
-        const sql = distinctIntervals ? `
+        const sql = overlapMode === "merged_interval_exists" ? `
+SELECT
+  u.chrom AS chrom,
+  COUNT(*) AS overlap_count
+FROM user_intervals u
+ASOF LEFT JOIN ${annotationTable} a
+  ON u.norm_chrom = a.norm_chrom
+ AND a.start < u."end"
+WHERE a."end" > u.start
+GROUP BY 1
+ORDER BY 1
+` : overlapMode === "distinct_interval_exists" ? `
 SELECT
   u.chrom AS chrom,
   COUNT(*) AS overlap_count
@@ -974,13 +1003,21 @@ utils::write.table(
     };
 
     const duckdb_intersect = async (genome, track, chromosomes) => {
+        if (global_data.user_bed_promise && !global_data.user_bed_staged) {
+            update_operation_detail("Waiting for browser DuckDB backend preparation...");
+        }
         await ensure_user_bed_staged();
         const cacheKey = `${global_data.stage_token}::${genome}::${track}`;
         let overlapRows = global_data.overlap_cache[cacheKey];
         if (!overlapRows) {
             const annotationTable = await stage_annotation_table(genome, track);
             update_operation_detail(`Computing ${track.toLowerCase()} overlaps for ${genome}...`);
-            overlapRows = await query_overlap_counts(annotationTable, track.startsWith("Ensembl"));
+            const overlapMode = track === "Ensembl gene (exon)" || track === "Ensembl gene (CDS)"
+                ? "merged_interval_exists"
+                : track.startsWith("Ensembl")
+                    ? "distinct_interval_exists"
+                    : "count_all";
+            overlapRows = await query_overlap_counts(annotationTable, overlapMode);
             global_data.overlap_cache[cacheKey] = overlapRows;
         } else {
             update_operation_detail(`Using cached ${track.toLowerCase()} overlap counts for ${genome}...`);
@@ -1563,6 +1600,14 @@ utils::write.table(
             });
         });
         add_table_row({ title: "Load time", value: format_duration(durationMs) });
+        if (!global_data.user_bed_staged && !global_data.user_bed_promise && global_data.bed_rows.length > 0) {
+            set_runtime_status("Preparing webR + Rduckhts backend in background...", "warning");
+            void ensure_user_bed_staged().catch((error) => {
+                if (global_data.stage_token) {
+                    console.error(error);
+                }
+            });
+        }
     }
 
     const file_upload = (event) => {
