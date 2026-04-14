@@ -4,7 +4,7 @@
 <head>
     <meta charset="utf-8" />
     <meta name="author" content="Joe Brown" />
-    <title>bedqc</title>
+    <title>DuckBedQC</title>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces&display=swap" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" />
@@ -16,7 +16,6 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/10.0.2/math.min.js"></script>
     <script src="https://cdn.datatables.net/v/bs5/dt-1.11.3/b-2.2.1/b-html5-2.2.1/fh-3.2.1/datatables.min.js"></script>
     <script src="https://cdn.plot.ly/plotly-2.2.0.min.js"></script>
-    <script src="https://biowasm.com/cdn/v3/aioli.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.1/papaparse.min.js"></script>
 
     <style>
@@ -119,9 +118,9 @@
 
 <nav>
     <div class="px-4 py-5 my-5 text-center">
-        <h1 class="display-5 fw-bold brand">bedqc</h1>
+        <h1 class="display-5 fw-bold brand">DuckBedQC</h1>
         <div class="col-lg-6 mx-auto">
-            <p class="lead mb-4">A tool to validate and profile genomic intervals in BED format.</p>
+            <p class="lead mb-4">Validate and profile genomic intervals in BED format with browser-side DuckDB.</p>
         </div>
         <div class="col-12 col-lg-8 mx-auto p-3">
             <div class="" id="local-file-upload">
@@ -142,6 +141,7 @@
             </div>
         </div>
         <div class="col-lg-8 mx-auto text-danger pt-2" id="file-size-warning" hidden></div>
+        <div class="col-lg-8 mx-auto text-muted small pt-2" id="runtime-status">Initializing webR + Rduckhts backend...</div>
     </div>
 
     <div id="introduction">
@@ -154,9 +154,11 @@
                     </div>
                     <div>
                         <h2>Secure processing</h2>
-                        <p>Your files are processed by your browser on your local machine using javascript and tools
-                            from the <a href="https://github.com/biowasm/aioli" class="link-dark">biowasm project</a>.
-                            No data is transferred from your local machine.</p>
+                        <p>Your files are processed by your browser on your local machine using JavaScript,
+                            <a href="https://docs.r-wasm.org/webr/latest/" class="link-dark">webR</a>,
+                            <a href="https://duckdb.org/" class="link-dark">DuckDB</a>, and
+                            <a href="https://github.com/RGenomicsETL/duckhts" class="link-dark">Rduckhts</a>.
+                            No interval data is transferred away from your local machine.</p>
                     </div>
                 </div>
                 <div class="col d-flex align-items-start">
@@ -176,7 +178,7 @@
                     </div>
                     <div>
                         <h2>Try an example</h2>
-                        <p>We have prepared two examples to discover bedqc features</p>
+                        <p>We have prepared two examples to discover DuckBedQC features.</p>
                         <ul>
                             <li>
                                 <button type="button" class="btn btn-link" id="load-example-cgpislands">CpG islands,
@@ -224,9 +226,8 @@
         <div class="px-4 py-5 my-5 text-center">
             <h1 class="display-5 fw-bold">More complex analyses</h1>
             <div class="col-lg-6 mx-auto">
-                <p class="lead mb-4">For instance, since most annotations will not overlap gaps in the same genome
-                    build, you can use this tool to help determine your file's genome build comparing to gaps from
-                    various builds to find which has the fewest intersecting hits.</p>
+                <p class="lead mb-4">For instance, you can compare your intervals against bundled centromere and gene
+                    annotations from multiple builds to sanity-check genome build assumptions and overall BED content.</p>
             </div>
         </div>
     </div>
@@ -239,6 +240,28 @@
         </div>
     </div>
 </nav>
+
+<div class="modal fade" id="operation-modal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-body p-4">
+                <div class="d-flex align-items-start">
+                    <div class="spinner-border text-dark me-3 mt-1" role="status" id="operation-modal-spinner">
+                        <span class="visually-hidden">Working...</span>
+                    </div>
+                    <div class="flex-grow-1">
+                        <h5 class="mb-1" id="operation-modal-title">Working...</h5>
+                        <p class="text-muted mb-3" id="operation-modal-detail">Preparing browser task.</p>
+                        <div class="d-flex justify-content-between small">
+                            <span id="operation-modal-state">Running</span>
+                            <span id="operation-modal-elapsed">0 ms</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 
 <div class="offcanvas offcanvas-start" tabindex="-1" id="offcanvas-interval-density"
     aria-labelledby="offcanvas-interval-density-label">
@@ -295,32 +318,30 @@
 <div class="offcanvas offcanvas-start" tabindex="-1" id="offcanvas-Intersect"
     aria-labelledby="offcanvas-intersect-gap-label">
     <div class="offcanvas-header">
-        <h5 class="offcanvas-title" id="offcanvas-intersect-gap-label">Interpreting intersection plots</h5>
+        <h5 class="offcanvas-title" id="offcanvas-intersect-gap-label">Interpreting overlap plots</h5>
         <button type="button" class="btn-close text-reset" data-bs-dismiss="offcanvas" aria-label="Close"></button>
     </div>
     <div class="offcanvas-body">
         <div class="row pb-3">
-            <div class="card-body">Intersecting a BED with known intervals can help us determine the genome by way of
-                elimination (using gaps). It can also instruct us whether or not our intervals hit genes, exons, or
-                introns, which can help sanity check intervals by genome build or per your science question. For
-                instance, if you assume your intervals are exonic then one would expect zero hits with Ensembl introns.
+            <div class="card-body">Intersecting a BED with known annotations can help narrow down likely genome builds
+                and confirm that the intervals match the kind of regions you expect. In this fork, DuckBedQC ships
+                bundled centromere and whole-gene tables that are queried through DuckDB in the browser.
             </div>
         </div>
         <div class="row pb-3">
             <div class="card-body">
                 <h3 class="card-subtitle mb-2 text-success">Normal</h3>
                 <div class="card-img-top" id="intersect-gap-normal"></div>
-                <p class="card-text pt-2">Our intervals, in the case of intersecting with Gaps, do not overlap
-                    structures like telomeres and centromeres of the selected genome build, suggesting the selected
-                    genome build is <span class="fw-bold fst-italic">not incorrect</span>.</p>
+                <p class="card-text pt-2">If intervals show little overlap with centromeres for the selected build,
+                    that build remains a plausible explanation for the uploaded BED.</p>
             </div>
         </div>
         <div class="row pb-3">
             <div class="card-body">
                 <h3 class="card-subtitle mb-2 text-warning">Potential issue</h3>
                 <div class="card-img-top" id="intersect-gap-issue"></div>
-                <p class="card-text">If we intersect our intervals with Gaps and observe many overlaps, our intervals
-                    may not be from the selected genome build as we usually anticipate little overlap with centromeres.
+                <p class="card-text">If intervals overlap many centromere intervals for the selected build, the BED may
+                    belong to a different build or include unexpected regions.
                 </p>
             </div>
         </div>
@@ -348,11 +369,13 @@
 </div>
 
 <script type="module">
+    import { WebR } from "https://webr.r-wasm.org/latest/webr.mjs";
+
     const plot_config = {
         displaylogo: false,
         toImageButtonOptions: {
             format: "svg", // one of png, svg, jpeg, webp
-            filename: "bedqc",
+            filename: "duckbedqc",
             height: 600,
             width: 1200,
             scale: 1, // Multiply title/legend/axis/canvas sizes by this factor
@@ -371,6 +394,469 @@
             family: "Raleway, sans-serif",
             size: 12,
         },
+    };
+    const runtimeStatusNode = document.getElementById("runtime-status");
+    const operationModalNode = document.getElementById("operation-modal");
+    const operationModalTitleNode = document.getElementById("operation-modal-title");
+    const operationModalDetailNode = document.getElementById("operation-modal-detail");
+    const operationModalStateNode = document.getElementById("operation-modal-state");
+    const operationModalElapsedNode = document.getElementById("operation-modal-elapsed");
+    const operationModalSpinnerNode = document.getElementById("operation-modal-spinner");
+    const textEncoder = new TextEncoder();
+    const textDecoder = new TextDecoder();
+    const operationModal = new bootstrap.Modal(operationModalNode, {
+        backdrop: "static",
+        keyboard: false,
+    });
+    let activeOperation = null;
+    const duckBackend = {
+        initPromise: null,
+        webR: null,
+        shelter: null,
+        ready: false,
+        stagedAnnotations: new Set(),
+    };
+    const build_exon_annotation_sql = (sourceTable, targetTable) => `
+CREATE OR REPLACE TABLE ${targetTable} AS
+WITH genes AS (
+  SELECT
+    chrom,
+    start AS gene_start,
+    "end" AS gene_end,
+    name,
+    score,
+    strand,
+    thick_start,
+    thick_end,
+    CAST(block_count AS BIGINT) AS block_count,
+    regexp_split_to_array(regexp_replace(block_sizes, ',+$', ''), ',') AS block_size_parts,
+    regexp_split_to_array(regexp_replace(block_starts, ',+$', ''), ',') AS block_start_parts
+  FROM ${sourceTable}
+  WHERE block_count IS NOT NULL
+    AND block_count > 0
+    AND block_sizes IS NOT NULL
+    AND block_starts IS NOT NULL
+),
+expanded AS (
+  SELECT
+    chrom,
+    gene_start + CAST(list_extract(block_start_parts, idx.i) AS BIGINT) AS start,
+    gene_start + CAST(list_extract(block_start_parts, idx.i) AS BIGINT) + CAST(list_extract(block_size_parts, idx.i) AS BIGINT) AS "end",
+    name,
+    score,
+    strand,
+    idx.i AS block_index,
+    thick_start,
+    thick_end
+  FROM genes
+  CROSS JOIN unnest(range(1, block_count + 1)) AS idx(i)
+)
+SELECT
+  chrom,
+  start,
+  "end",
+  name,
+  score,
+  strand,
+  block_index
+FROM expanded
+WHERE "end" > start
+ORDER BY chrom, start, "end", name, block_index
+`;
+    const build_cds_annotation_sql = (sourceTable, targetTable) => `
+CREATE OR REPLACE TABLE ${targetTable} AS
+WITH genes AS (
+  SELECT
+    chrom,
+    start AS gene_start,
+    name,
+    score,
+    strand,
+    thick_start,
+    thick_end,
+    CAST(block_count AS BIGINT) AS block_count,
+    regexp_split_to_array(regexp_replace(block_sizes, ',+$', ''), ',') AS block_size_parts,
+    regexp_split_to_array(regexp_replace(block_starts, ',+$', ''), ',') AS block_start_parts
+  FROM ${sourceTable}
+  WHERE block_count IS NOT NULL
+    AND block_count > 0
+    AND block_sizes IS NOT NULL
+    AND block_starts IS NOT NULL
+    AND thick_start IS NOT NULL
+    AND thick_end IS NOT NULL
+    AND thick_end > thick_start
+),
+expanded AS (
+  SELECT
+    chrom,
+    gene_start + CAST(list_extract(block_start_parts, idx.i) AS BIGINT) AS exon_start,
+    gene_start + CAST(list_extract(block_start_parts, idx.i) AS BIGINT) + CAST(list_extract(block_size_parts, idx.i) AS BIGINT) AS exon_end,
+    name,
+    score,
+    strand,
+    idx.i AS block_index,
+    thick_start,
+    thick_end
+  FROM genes
+  CROSS JOIN unnest(range(1, block_count + 1)) AS idx(i)
+)
+SELECT
+  chrom,
+  greatest(exon_start, thick_start) AS start,
+  least(exon_end, thick_end) AS "end",
+  name,
+  score,
+  strand,
+  block_index
+FROM expanded
+WHERE exon_end > thick_start
+  AND exon_start < thick_end
+  AND least(exon_end, thick_end) > greatest(exon_start, thick_start)
+ORDER BY chrom, start, "end", name, block_index
+`;
+    const annotationSources = {
+        hg38: {
+            Centromeres: {
+                kind: "bed",
+                tableName: "annotation_hg38_centromeres",
+                url: "data/GRCh38_centromeres.bed",
+                vfsPath: "/duckbedqc/data/GRCh38_centromeres.bed",
+            },
+            "Ensembl gene (whole)": {
+                kind: "bed",
+                tableName: "annotation_hg38_genes",
+                url: "data/GRCh38_genes.bed",
+                vfsPath: "/duckbedqc/data/GRCh38_genes.bed",
+            },
+            "Ensembl gene (exon)": {
+                kind: "derived",
+                tableName: "annotation_hg38_genes_exons",
+                sourceTrack: "Ensembl gene (whole)",
+                sqlBuilder: build_exon_annotation_sql,
+            },
+            "Ensembl gene (CDS)": {
+                kind: "derived",
+                tableName: "annotation_hg38_genes_cds",
+                sourceTrack: "Ensembl gene (whole)",
+                sqlBuilder: build_cds_annotation_sql,
+            },
+        },
+        hg19: {
+            Centromeres: {
+                kind: "bed",
+                tableName: "annotation_hg19_centromeres",
+                url: "data/GRCh37_centromeres.bed",
+                vfsPath: "/duckbedqc/data/GRCh37_centromeres.bed",
+            },
+            "Ensembl gene (whole)": {
+                kind: "bed",
+                tableName: "annotation_hg19_genes",
+                url: "data/GRCh37_genes.bed",
+                vfsPath: "/duckbedqc/data/GRCh37_genes.bed",
+            },
+            "Ensembl gene (exon)": {
+                kind: "derived",
+                tableName: "annotation_hg19_genes_exons",
+                sourceTrack: "Ensembl gene (whole)",
+                sqlBuilder: build_exon_annotation_sql,
+            },
+            "Ensembl gene (CDS)": {
+                kind: "derived",
+                tableName: "annotation_hg19_genes_cds",
+                sourceTrack: "Ensembl gene (whole)",
+                sqlBuilder: build_cds_annotation_sql,
+            },
+        },
+    };
+
+    const set_runtime_status = (message, kind = "muted") => {
+        runtimeStatusNode.className = `col-lg-8 mx-auto small pt-2 text-${kind}`;
+        runtimeStatusNode.textContent = message;
+    };
+
+    const format_duration = (ms) => {
+        if (ms < 1000) {
+            return `${Math.round(ms)} ms`;
+        }
+        if (ms < 60000) {
+            return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 2)} s`;
+        }
+        const minutes = Math.floor(ms / 60000);
+        const seconds = ((ms % 60000) / 1000).toFixed(1);
+        return `${minutes}m ${seconds}s`;
+    };
+
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    const refresh_operation_elapsed = () => {
+        if (!activeOperation) {
+            return;
+        }
+        operationModalElapsedNode.textContent = format_duration(performance.now() - activeOperation.startedAt);
+    };
+
+    const begin_operation = ({ title, detail }) => {
+        if (activeOperation?.timerId) {
+            clearInterval(activeOperation.timerId);
+        }
+        const op = {
+            id: `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+            startedAt: performance.now(),
+            timerId: null,
+        };
+        activeOperation = op;
+        operationModalTitleNode.textContent = title;
+        operationModalDetailNode.textContent = detail;
+        operationModalStateNode.textContent = "Running";
+        operationModalStateNode.className = "";
+        operationModalSpinnerNode.className = "spinner-border text-dark me-3 mt-1";
+        operationModalElapsedNode.textContent = "0 ms";
+        operationModal.show();
+        op.timerId = setInterval(refresh_operation_elapsed, 100);
+        return op.id;
+    };
+
+    const update_operation_detail = (detail, title = null) => {
+        if (!activeOperation) {
+            return;
+        }
+        if (title) {
+            operationModalTitleNode.textContent = title;
+        }
+        operationModalDetailNode.textContent = detail;
+        refresh_operation_elapsed();
+    };
+
+    const finish_operation = async (operationId, { success, summary }) => {
+        if (!activeOperation || activeOperation.id !== operationId) {
+            return 0;
+        }
+        clearInterval(activeOperation.timerId);
+        const durationMs = performance.now() - activeOperation.startedAt;
+        operationModalElapsedNode.textContent = format_duration(durationMs);
+        operationModalStateNode.textContent = success ? "Completed" : "Failed";
+        operationModalStateNode.className = success ? "text-success" : "text-danger";
+        operationModalDetailNode.textContent = `${summary} (${format_duration(durationMs)})`;
+        operationModalSpinnerNode.className = success ? "bi bi-check-circle-fill text-success me-3 mt-1" : "bi bi-exclamation-triangle-fill text-danger me-3 mt-1";
+        await sleep(success ? 700 : 1200);
+        operationModal.hide();
+        activeOperation = null;
+        return durationMs;
+    };
+
+    const run_timed_operation = async ({ title, detail, successSummary, failureSummary }, fn) => {
+        const operationId = begin_operation({ title, detail });
+        try {
+            const result = await fn();
+            const durationMs = await finish_operation(operationId, {
+                success: true,
+                summary: successSummary,
+            });
+            return { result, durationMs };
+        } catch (error) {
+            await finish_operation(operationId, {
+                success: false,
+                summary: `${failureSummary}: ${error.message ?? String(error)}`,
+            });
+            throw error;
+        }
+    };
+
+    const annotate_hypothesis_duration = (idx, message) => {
+        const panel = document.querySelector(`#hypothesis-output-${idx} .col-lg-11`);
+        if (!panel) {
+            return;
+        }
+        const timingId = `hypothesis-output-${idx}-timing`;
+        let timing = document.getElementById(timingId);
+        if (!timing) {
+            panel.insertAdjacentHTML("beforeend", `<div class="small text-muted pt-2" id="${timingId}"></div>`);
+            timing = document.getElementById(timingId);
+        }
+        timing.textContent = message;
+    };
+
+    const fetch_genome_chromosome_lengths = async (genome, preferChrPrefix) => {
+        const response = await new Promise((resolve, reject) => {
+            jQuery
+                .getJSON(`https://api.genome.ucsc.edu/list/chromosomes?genome=${genome}`, resolve)
+                .fail((_jqXHR, textStatus, errorThrown) => reject(new Error(errorThrown || textStatus || `Failed to fetch chromosome sizes for ${genome}`)));
+        });
+        if (preferChrPrefix) {
+            return Object.fromEntries(
+                Object.entries(response.chromosomes).map(([chrom, len]) => [normalize_chromosome_label(chrom, true), len])
+            );
+        }
+        const chromosome_lengths = {};
+        Object.keys(response.chromosomes).forEach((chrom) => {
+            chromosome_lengths[normalize_chromosome_label(chrom.substring(3), false)] = response.chromosomes[chrom];
+        });
+        return chromosome_lengths;
+    };
+
+    const is_mitochondrial_chromosome = (chrom) => /^(chr)?M(T)?$/i.test((chrom || "").trim());
+
+    const normalize_chromosome_label = (chrom, preferChrPrefix) => {
+        const value = (chrom || "").trim();
+        if (!is_mitochondrial_chromosome(value)) {
+            return value;
+        }
+        return preferChrPrefix ? "chrM" : "M";
+    };
+
+    const normalize_join_chromosome_expr = (columnSql) => `
+CASE
+  WHEN upper(CASE WHEN starts_with(${columnSql}, 'chr') THEN substr(${columnSql}, 4) ELSE ${columnSql} END) = 'MT' THEN 'M'
+  ELSE CASE WHEN starts_with(${columnSql}, 'chr') THEN substr(${columnSql}, 4) ELSE ${columnSql} END
+END
+`;
+
+    const is_primary_plot_chromosome = (chrom) => chrom.match(/fix|random|alt|Un|hap/g) === null;
+
+    const escape_r_string = (value) => value
+        .replaceAll("\\", "\\\\")
+        .replaceAll("'", "\\'")
+        .replaceAll("\n", "\\n")
+        .replaceAll("\r", "\\r");
+
+    const ensure_webr_dir = async (path) => {
+        try {
+            await duckBackend.webR.FS.lookupPath(path);
+        } catch (_) {
+            await duckBackend.webR.FS.mkdir(path);
+        }
+    };
+
+    const run_r = async (code) => {
+        if (!duckBackend.shelter) {
+            throw new Error("webR shelter is not ready");
+        }
+        return duckBackend.shelter.captureR(code, { withAutoprint: false });
+    };
+
+    const execute_sql = async (sql) => {
+        await run_r(`DBI::dbExecute(con, "${escape_r_string(sql).replaceAll('"', '\\"')}")`);
+    };
+
+    const warm_duck_backend = async () => {
+        if (duckBackend.initPromise) {
+            return duckBackend.initPromise;
+        }
+        duckBackend.initPromise = (async () => {
+            set_runtime_status("Installing browser backend packages...", "warning");
+            const webR = new WebR();
+            await webR.init();
+            duckBackend.webR = webR;
+
+            await ensure_webr_dir("/duckbedqc");
+            await ensure_webr_dir("/duckbedqc/data");
+            await ensure_webr_dir("/duckbedqc/query");
+
+            await webR.installPackages(["DBI", "duckdb"], { repos: "https://repo.r-wasm.org/" });
+            await webR.installPackages(["Rduckhts"], { repos: ["https://rgenomicsetl.r-universe.dev", "https://repo.r-wasm.org/"], mount: false });
+
+            duckBackend.shelter = await new webR.Shelter();
+            await run_r("library(DBI)");
+            await run_r("library(duckdb)");
+            await run_r("library(Rduckhts)");
+            await run_r("con <- DBI::dbConnect(duckdb::duckdb(config = list(allow_unsigned_extensions = 'true')))");
+            await run_r("rduckhts_load(con)");
+            duckBackend.ready = true;
+            set_runtime_status("webR + Rduckhts backend ready.", "success");
+            return duckBackend;
+        })().catch((error) => {
+            console.error(error);
+            duckBackend.initPromise = null;
+            duckBackend.ready = false;
+            set_runtime_status(`webR backend failed: ${error.message ?? String(error)}`, "danger");
+            throw error;
+        });
+        return duckBackend.initPromise;
+    };
+
+    const stage_annotation_table = async (genome, track) => {
+        await warm_duck_backend();
+        const source = annotationSources[genome]?.[track];
+        if (!source) {
+            throw new Error(`No annotation source configured for ${genome} ${track}`);
+        }
+        if (duckBackend.stagedAnnotations.has(source.tableName)) {
+            return source.tableName;
+        }
+        if (source.kind === "derived") {
+            const sourceTable = await stage_annotation_table(genome, source.sourceTrack);
+            await execute_sql(source.sqlBuilder(sourceTable, source.tableName));
+            duckBackend.stagedAnnotations.add(source.tableName);
+            return source.tableName;
+        }
+
+        const response = await fetch(source.url, { cache: "no-store" });
+        if (!response.ok) {
+            throw new Error(`Failed to fetch annotation: ${source.url}`);
+        }
+        await duckBackend.webR.FS.writeFile(source.vfsPath, new Uint8Array(await response.arrayBuffer()));
+        await run_r(`rduckhts_bed(con, '${source.tableName}', '${escape_r_string(source.vfsPath)}', overwrite = TRUE)`);
+        duckBackend.stagedAnnotations.add(source.tableName);
+        return source.tableName;
+    };
+
+    const stage_user_bed = async (bedRows, stageToken) => {
+        await warm_duck_backend();
+
+        if (!bedRows.length) {
+            if (global_data.stage_token !== stageToken) {
+                return false;
+            }
+            await execute_sql("CREATE OR REPLACE TABLE user_intervals AS SELECT CAST(NULL AS VARCHAR) AS chrom, CAST(NULL AS BIGINT) AS start, CAST(NULL AS BIGINT) AS \"end\" WHERE FALSE");
+            return true;
+        }
+
+        const userBedPath = `/duckbedqc/input_${stageToken}.bed`;
+        const content = `${bedRows.map((row) => row.join("\t")).join("\n")}\n`;
+        await duckBackend.webR.FS.writeFile(userBedPath, textEncoder.encode(content));
+        if (global_data.stage_token !== stageToken) {
+            return false;
+        }
+        await run_r(`rduckhts_bed(con, 'user_intervals', '${escape_r_string(userBedPath)}', overwrite = TRUE)`);
+        return global_data.stage_token === stageToken;
+    };
+
+    const query_overlap_counts = async (annotationTable, distinctIntervals = false) => {
+        const outputPath = "/duckbedqc/query/overlap_counts.tsv";
+        const overlapCountExpr = distinctIntervals ? "COUNT(DISTINCT u.interval_id)" : "COUNT(*)";
+        const normalizedUserChrom = normalize_join_chromosome_expr("u.chrom");
+        const normalizedAnnotationChrom = normalize_join_chromosome_expr("a.chrom");
+        const sql = `
+WITH user_intervals_numbered AS (
+  SELECT row_number() OVER () AS interval_id, * FROM user_intervals
+)
+SELECT
+  u.chrom AS chrom,
+  ${overlapCountExpr} AS overlap_count
+FROM user_intervals_numbered u
+INNER JOIN ${annotationTable} a
+  ON (${normalizedUserChrom}) = (${normalizedAnnotationChrom})
+ AND u.start < a."end"
+ AND a.start < u."end"
+GROUP BY 1
+ORDER BY 1
+`;
+        await run_r(`
+overlap_counts <- DBI::dbGetQuery(con, "${escape_r_string(sql).replaceAll('"', '\\"')}")
+utils::write.table(
+  overlap_counts,
+  file = '${escape_r_string(outputPath)}',
+  sep = '\\t',
+  row.names = FALSE,
+  quote = FALSE
+)
+`);
+        const bytes = await duckBackend.webR.FS.readFile(outputPath);
+        return Papa.parse(textDecoder.decode(bytes), {
+            header: true,
+            delimiter: "\t",
+            skipEmptyLines: true,
+        }).data;
     };
 
     const sort_alphanum = (a, b) => a.localeCompare(b, "en", { numeric: true });
@@ -482,10 +968,6 @@
         }
     };
 
-    let CLI = await new Aioli("bedtools/2.29.2", { printInterleaved: false });
-    const output = await CLI.exec("bedtools --version");
-    console.log(`Loaded ${output.stdout}`);
-
     const strip_prefix = (str) => {
         if (str.startsWith("chr")) {
             return str.slice(3);
@@ -510,45 +992,19 @@
         window.scrollTo({ top: y, behavior: "smooth" });
     };
 
-    const bedtools_intersect = async (genome, track, chromosomes, prefix) => {
-        let table;
-        let cmd = "bedtools intersect -sorted";
-        if (track == "gap") {
-            table = `${genome}_gap.bed.gz`;
-        } else if (track.startsWith("Ensembl")) {
-            cmd += " -u";
-            if (track.endsWith("whole)")) {
-                table = `${genome}_ensembl_gene_wholegene.bed.gz`;
-            } else if (track.endsWith("exon)")) {
-                table = `${genome}_ensembl_gene_exon.bed.gz`;
-            } else if (track.endsWith("intron)")) {
-                table = `${genome}_ensembl_gene_intron.bed.gz`;
-            } else if (track.endsWith("CDS)")) {
-                table = `${genome}_ensembl_gene_cds.bed.gz`;
-            }
-        } else {
-            console.log("selected table was not accounted for in `bedtools intersect`");
+    const duckdb_intersect = async (genome, track, chromosomes) => {
+        if (global_data.user_bed_promise) {
+            await global_data.user_bed_promise;
+        }
+        if (global_data.user_bed_error) {
+            throw global_data.user_bed_error;
         }
 
-        let remote_file = `bedqc.s3.amazonaws.com/${table}`;
-        if (!global_data.chr_prefix) {
-            remote_file = remote_file.replace(".bed.gz", "_noprefix.bed.gz");
-        }
-        try {
-            await CLI.mount(`https://${remote_file}`);
-        } catch (error) {
-            console.log("file likely already exists. ignoring error.");
-            console.error(error);
-        }
-        // console.log("ls:", await CLI.ls("."));
-
-        // intersect user upload and UCSC track
-        let o = await CLI.exec(`${cmd} -a a.bed -b ${remote_file.replace("/", "-")}`);
-        o.stdout = o.stdout.split("\n").map((p) => p.split("\t"));
-
+        const annotationTable = await stage_annotation_table(genome, track);
+        const overlapRows = await query_overlap_counts(annotationTable, track.startsWith("Ensembl"));
         let chr_count = {};
-        o.stdout.forEach((row) => {
-            chr_count[row[0]] = (chr_count[row[0]] || 0) + 1;
+        overlapRows.forEach((row) => {
+            chr_count[row.chrom] = parseInt(row.overlap_count || "0", 10);
         });
 
         let content = document.getElementById("content");
@@ -557,21 +1013,19 @@
         let secondary = $(`#hypothesis-secondary-${idx}`).val();
 
         genome = $(`#hypothesis-genome-${idx}`).val();
-        let err_msg = o.stderr ? `<div class="col-12 pb-2"><div><code>${o.stderr}</code></div></div>` : "";
 
         content.insertAdjacentHTML(
             "beforeend",
-            `<div class="container-fluid row mx-auto pb-3">
+            `<div class="container-fluid row mx-auto pb-3" id="hypothesis-output-${idx}">
                 <div class="d-flex col-1 justify-content-end"><code>Out[${idx}]</code></div>
                 <div class="col-lg-11 p-0">
                     <div class="d-flex flex-row">
                         <div class="pe-2">
-                            <h6>${to_title(primary)} ${genome} ${secondary} count</h6>
+                            <h6>${to_title(primary)} ${genome} ${secondary} overlap count</h6>
                         </div>
                         <a class="btn btn-primary btn-circle" data-bs-toggle="offcanvas" href="#offcanvas-${primary}" role="button" aria-controls="offcanvas-${primary}">?</a>
                     </div>
                     <div class="row pt-1">
-                        ${err_msg}
                         <div class="col-12">
                             <div id="hypothesis-${idx}-plot"></div>
                         </div>
@@ -634,7 +1088,7 @@
                                 <select class="form-select hyp-test" id="hypothesis-primary-${idx}">
                                     <option selected>Calculate interval densities</option>
                                     <option>Calculate interval counts</option>
-                                    <option value="Intersect">Overlap intervals with table</option>
+                                    <option value="Intersect">Overlap intervals with annotation</option>
                                 </select>
                                 <label for="hypothesis-primary-${idx}">Action</label>
                             </div>
@@ -651,13 +1105,12 @@
                         <div class="col" id="hypothesis-secondary-wrapper-${idx}" hidden>
                             <div class="form-floating">
                                 <select class="form-select hyp-test" id="hypothesis-secondary-${idx}">
-                                    <option selected>gap</option>
+                                    <option selected>Centromeres</option>
                                     <option>Ensembl gene (whole)</option>
                                     <option>Ensembl gene (exon)</option>
-                                    <option>Ensembl gene (intron)</option>
                                     <option>Ensembl gene (CDS)</option>
                                 </select>
-                                <label for="hypothesis-secondary-${idx}">Table</label>
+                                <label for="hypothesis-secondary-${idx}">Annotation</label>
                             </div>
                         </div>
                         <div class="col-1">
@@ -704,6 +1157,7 @@
         let action = $(`#hypothesis-primary-${idx}`).val();
         let genome = $(`#hypothesis-genome-${idx}`).val();
         let track = $(`#hypothesis-secondary-${idx}`).val();
+        let content = document.getElementById("content");
 
         global_data.previous_primary_action = action;
         global_data.previous_secondary_action = track;
@@ -712,28 +1166,26 @@
         // disable the components of the current test
         $(".hyp-test:enabled").prop("disabled", true);
 
-        let chromosome_lengths;
-        jQuery
-            .getJSON(`https://api.genome.ucsc.edu/list/chromosomes?genome=${genome}`, (d) => {
-                if (global_data.chr_prefix) {
-                    chromosome_lengths = d.chromosomes;
-                } else {
-                    // non-chr prefixed chroms
-                    Object.keys(d.chromosomes).map((k) => (chromosome_lengths[k.substring(3)] = d.chromosomes[k]));
-                }
-            })
-            .then(async () => {
+        try {
+            const { durationMs } = await run_timed_operation({
+                title: "Running analysis",
+                detail: `Preparing ${action.toLowerCase()} for ${genome}.`,
+                successSummary: "Analysis finished",
+                failureSummary: "Analysis failed",
+            }, async () => {
+                update_operation_detail(`Fetching chromosome sizes for ${genome}...`);
+                const chromosome_lengths = await fetch_genome_chromosome_lengths(genome, global_data.chr_prefix);
                 let genome_length = 0;
-                let display_chroms = Object.keys(chromosome_lengths).filter((k) => k.match(/fix|random|alt|Un|hap|MT|M/g) === null);
+                let display_chroms = Object.keys(chromosome_lengths).filter(is_primary_plot_chromosome);
                 display_chroms.sort(sort_alphanum);
                 // length of genome with only primary chromosomes
                 display_chroms.map((x) => (genome_length += chromosome_lengths[x]));
-                let content = document.getElementById("content");
 
                 if (action == "Calculate interval densities") {
+                    update_operation_detail(`Computing interval densities across ${genome}...`);
                     content.insertAdjacentHTML(
                         "beforeend",
-                        `<div class="container-fluid row mx-auto pb-3">
+                        `<div class="container-fluid row mx-auto pb-3" id="hypothesis-output-${idx}">
                             <div class="d-flex col-1 justify-content-end"><code>Out[${idx}]</code></div>
                             <div class="col-lg-11 p-0">
                                 <div class="d-flex flex-row">
@@ -746,7 +1198,7 @@
                                     <div class="col-12">
                                         <div id="hypothesis-${idx}-plot"></div>
                                     </div>
-                                </div>
+                                },
                             </div>
                         </div>
                         `
@@ -775,11 +1227,11 @@
                             },
                         }
                     );
-                    build_input_test();
                 } else if (action == "Calculate interval counts") {
+                    update_operation_detail(`Computing interval counts across ${genome}...`);
                     content.insertAdjacentHTML(
                         "beforeend",
-                        `<div class="container-fluid row mx-auto pb-3">
+                        `<div class="container-fluid row mx-auto pb-3" id="hypothesis-output-${idx}">
                             <div class="d-flex col-1 justify-content-end"><code>Out[${idx}]</code></div>
                             <div class="col-lg-11 p-0">
                                 <div class="d-flex flex-row">
@@ -792,7 +1244,7 @@
                                     <div class="col-12">
                                         <div id="hypothesis-${idx}-plot"></div>
                                     </div>
-                                </div>
+                                },
                             </div>
                         </div>
                         `
@@ -821,15 +1273,32 @@
                             },
                         }
                     );
-                    build_input_test();
                 } else if (action == "Intersect") {
-                    await bedtools_intersect(genome, track, display_chroms, global_data.chr_prefix);
-                    build_input_test();
+                    update_operation_detail(`Computing ${track.toLowerCase()} overlaps for ${genome}...`);
+                    await duckdb_intersect(genome, track, display_chroms);
                 } else {
                     console.log("Unaccounted for action selected.");
                 }
-                scroll_to(`hypothesis-${idx}-anchor`);
             });
+            annotate_hypothesis_duration(idx, `Completed in ${format_duration(durationMs)}`);
+        } catch (error) {
+            console.error(error);
+            content.insertAdjacentHTML(
+                "beforeend",
+                `<div class="container-fluid row mx-auto pb-3" id="hypothesis-output-${idx}">
+                    <div class="d-flex col-1 justify-content-end"><code>Out[${idx}]</code></div>
+                    <div class="col-lg-11 p-0">
+                        <div class="alert alert-danger mb-0">
+                            Browser DuckDB query failed: <code>${String(error.message ?? error)}</code>
+                        </div>
+                    </div>
+                </div>`
+            );
+            annotate_hypothesis_duration(idx, "Failed");
+        }
+
+        build_input_test();
+        scroll_to(`hypothesis-${idx}-anchor`);
     };
 
     const update_hypothesis_blurb = (event) => {
@@ -846,10 +1315,14 @@
             $(`#hypothesis-secondary-wrapper-${idx}`).prop("hidden", true);
         } else if (primary == "Intersect") {
             $(`#hypothesis-secondary-wrapper-${idx}`).prop("hidden", false);
-            if (secondary == "gap") {
-                str = `If your intervals intersect with many gaps across chromosomes, ${genome} may not be the underlying genome build of ${filename}.`;
+            if (secondary == "Centromeres") {
+                str = `If your intervals intersect with many centromeres across chromosomes, ${genome} may not be the underlying genome build of ${filename}.`;
+            } else if (secondary == "Ensembl gene (exon)") {
+                str = `Intersect the intervals in ${filename} with exon blocks derived from the bundled BED12 gene models in DuckDB.`;
+            } else if (secondary == "Ensembl gene (CDS)") {
+                str = `Intersect the intervals in ${filename} with coding segments clipped from the bundled BED12 gene models in DuckDB.`;
             } else {
-                str = `Intersect the intervals in ${filename} with Ensembl gene elements.`;
+                str = `Intersect the intervals in ${filename} with bundled whole-gene annotations using DuckDB in the browser.`;
             }
         }
         $(`#hypothesis-blurb-${idx}`).html(str);
@@ -924,39 +1397,11 @@
     }
 
     const process_remote_file = async ({ file }) => {
-        let bed = [];
-
-        let data = {
-            newline: "\n",
-            delimiter: "\t",
-            n_of_fields: [],
-            missing_data: 0,
-            interval_count: 0,
-            interval_length_total: 0,
-            interval_lengths: [],
-            chr_interval_length: {},
-            chr_interval_lengths: {},
-            filtered_intervals: 0,
-            zero_length_intervals: 0,
-            extends_beyond_chr: 0,
-            chr_prefix: true,
-            chromosomes: [],
-            all_chromosomes: [],
-        };
-
-        let url = new URL(file)
-
-        try {
-            await CLI.mount(url.href)
-        } catch (error) {
-            console.log("file likely already exists. ignoring error.");
-            console.error(error);
+        const response = await fetch(file, { cache: "no-store" });
+        if (!response.ok) {
+            throw new Error(`Failed to fetch ${file}`);
         }
-        console.log("ls:", await CLI.ls("."));
-        let o = await CLI.cat(`${url.host}${url.pathname.replaceAll("/", "-")}`)
-        console.log("o", o)
-
-        process_local_file({ file: o, download: false })
+        return process_local_file({ file: await response.text(), download: false });
     }
 
     const process_local_file = async ({ file, download, }) => {
@@ -982,164 +1427,177 @@
             all_chromosomes: [],
         };
 
-        Papa.parse(file, {
-            download: download,
-            skipEmptyLines: "greedy",
-            header: false,
-            delimitersToGuess: ["\t", ",", " ", "|", ";", Papa.RECORD_SEP, Papa.UNIT_SEP],
-            encoding: "utf-8",
-            step: (res, parser) => {
-                data.interval_count += 1;
+        const { durationMs } = await run_timed_operation({
+            title: "Loading BED",
+            detail: "Parsing BED rows in the browser.",
+            successSummary: "BED loaded",
+            failureSummary: "BED load failed",
+        }, async () => {
+            await new Promise((resolve, reject) => {
+                Papa.parse(file, {
+                    download: download,
+                    skipEmptyLines: "greedy",
+                    header: false,
+                    delimitersToGuess: ["\t", ",", " ", "|", ";", Papa.RECORD_SEP, Papa.UNIT_SEP],
+                    encoding: "utf-8",
+                    step: (res, parser) => {
+                        data.interval_count += 1;
 
-                if (data.interval_count == file_stream_limit) {
-                    // add warning that we've stopped file streaming prematurely
-                    $("#file-size-warning").prop("hidden", false);
-                    $("#file-size-warning").html(`File too large. Data streaming stopped at line ${file_stream_limit.toLocaleString()}.`);
-                    stream_aborted = true;
-                    parser.abort();
-                }
+                        if (data.interval_count == file_stream_limit) {
+                            $("#file-size-warning").prop("hidden", false);
+                            $("#file-size-warning").html(`File too large. Data streaming stopped at line ${file_stream_limit.toLocaleString()}.`);
+                            stream_aborted = true;
+                            parser.abort();
+                        }
 
-                // incorrect line ending
-                if (!(res.meta.linebreak == "\n")) {
-                    console.log("found bad line break");
-                    data.newline = res.meta.linebreak;
-                    // parser.abort()
-                }
-                // not tab delimited
-                if (!(res.meta.delimiter == "\t")) {
-                    console.log("found bad delimiter");
-                    data.delimiter = res.meta.delimiter;
-                    // parser.abort()
-                }
-                // most likely a delimiter issue
-                if (res.data.length < 3) {
-                    // this file does not have at least 3 fields per line
-                    // offending line is d.interval_count with values
-                    // res.data
-                    console.log("aborting:", res.data);
-                    data.missing_data = data.interval_count;
-                    parser.abort();
-                }
-                // collect shape of bed data
-                if (!data.n_of_fields.includes(res.data.length)) {
-                    data.n_of_fields.push(res.data.length);
-                }
+                        if (!(res.meta.linebreak == "\n")) {
+                            data.newline = res.meta.linebreak;
+                        }
+                        if (!(res.meta.delimiter == "\t")) {
+                            data.delimiter = res.meta.delimiter;
+                        }
+                        if (res.data.length < 3) {
+                            data.missing_data = data.interval_count;
+                            parser.abort();
+                        }
+                        if (!data.n_of_fields.includes(res.data.length)) {
+                            data.n_of_fields.push(res.data.length);
+                        }
 
-                let chr = res.data[0];
-                res.data[1] = parseInt(res.data[1]);
-                res.data[2] = parseInt(res.data[2]);
-                let current_length = res.data[2] - res.data[1];
-                if (!chr.startsWith("chr")) {
-                    global_data.chr_prefix = false;
-                }
+                        let rawChr = res.data[0];
+                        if (!rawChr.startsWith("chr") && !is_mitochondrial_chromosome(rawChr)) {
+                            global_data.chr_prefix = false;
+                        }
+                        let chr = normalize_chromosome_label(rawChr, global_data.chr_prefix);
+                        res.data[1] = parseInt(res.data[1]);
+                        res.data[2] = parseInt(res.data[2]);
+                        let current_length = res.data[2] - res.data[1];
+                        res.data[0] = chr;
 
-                // set the chromosome order by appearance in bed file
-                if (!(chr in data.chr_interval_length)) {
-                    data.all_chromosomes.push(chr);
-                    data.chr_interval_lengths[chr] = [];
-                }
+                        if (!(chr in data.chr_interval_length)) {
+                            data.all_chromosomes.push(chr);
+                            data.chr_interval_lengths[chr] = [];
+                        }
 
-                // malformatted entry; 0-based start, 1-based end
-                if (current_length == 0) {
-                    data.zero_length_intervals += 1;
-                    res.data[1] -= 1;
-                }
+                        if (current_length == 0) {
+                            data.zero_length_intervals += 1;
+                            res.data[1] -= 1;
+                        }
 
-                // only saving user data on primary chroms
-                if (chr.match(/fix|random|alt|Un|hap|MT|M/g) === null) {
-                    global_data.interval_count_filtered += 1;
-                    bed.push(res.data.slice(0, 3));
-                    // this eval is duplicated
-                    if (!(chr in data.chr_interval_length)) {
-                        global_data.chromosomes.push(chr);
-                    }
-                }
+                        if (is_primary_plot_chromosome(chr)) {
+                            global_data.interval_count_filtered += 1;
+                            bed.push(res.data.slice(0, 3));
+                            if (!(chr in data.chr_interval_length)) {
+                                global_data.chromosomes.push(chr);
+                            }
+                        }
 
-                data.interval_length_total += current_length;
-                data.interval_lengths.push(current_length);
-                // simplifies calculating genome length
-                data.chr_interval_length[chr] = (data.chr_interval_length[chr] || 0) + current_length;
-                // used to build info table
-                data.chr_interval_lengths[chr].push(current_length);
-                global_data.chr_interval_count[chr] = (global_data.chr_interval_count[chr] || 0) + 1;
-            },
-            complete: async (res, file) => {
-                $("#example-loading").prop("hidden", true);
-                // resize the upload area
-                let el = document.getElementById("file-upload");
-                // show the file stats
-                $("#file-validation").prop("hidden", false);
-                if (!(data.delimiter == "\t")) {
-                    add_table_row({ title: "File delimiter", value: delimiter_string(data.delimiter), warn: true, validation: true });
-                } else {
-                    add_table_row({ title: "File delimiter", value: delimiter_string(data.delimiter), validation: true });
-                }
-                if (!(data.newline == "\n")) {
-                    add_table_row({ title: "File newline", value: newline_string(data.newline), warn: true, validation: true });
-                } else {
-                    add_table_row({ title: "File newline", value: newline_string(data.newline), validation: true });
-                }
-                if (!(data.missing_data == 0)) {
-                    add_table_row({ title: "Incomplete data on line", value: data.missing_data, warn: true, validation: true });
-                    return;
-                } else {
-                    // < !--0 - length intervals-- >
-                    if (data.zero_length_intervals > 0) {
-                        add_table_row({ title: "0-length intervals", value: data.zero_length_intervals.toLocaleString(), warn: true, validation: true });
-                    } else {
-                        add_table_row({ title: "0-length intervals", value: data.zero_length_intervals.toLocaleString(), validation: true });
-                    }
-                    // < !--number of fields per line-- >
-                    add_table_row({ title: "BED fields", value: data.n_of_fields.join(",") });
-                    // < !--interval count-- >
-                    add_table_row({ title: "Total interval count", value: data.interval_count.toLocaleString(), warn: stream_aborted, validation: stream_aborted })
-                    // < !--total nucleotides-- >
-                    add_table_row({ title: "Total nucleotides", value: data.interval_length_total.toLocaleString() });
-                    // show the interval size dist
-                    add_plot_div("interval-size-dist", "Interval length distribution", 2).then(() => {
-                        var trace = {
-                            x: data.interval_lengths,
-                            type: "histogram",
-                            marker: { color: aesthetics.palette[0] },
-                        };
-                        let layout = {
-                            height: 225,
-                            font: aesthetics.labelfont,
-                            padding: { t: 0, r: 15 },
-                            margin: { t: 0, r: 15 },
-                            xaxis: { title: "Interval length", automargin: true },
-                            yaxis: { title: "Count", automargin: true },
-                            legend: { font: { size: 16 } },
-                        };
-                        Plotly.newPlot("interval-size-dist-plot", [trace], layout, plot_config);
-                    });
+                        data.interval_length_total += current_length;
+                        data.interval_lengths.push(current_length);
+                        data.chr_interval_length[chr] = (data.chr_interval_length[chr] || 0) + current_length;
+                        data.chr_interval_lengths[chr].push(current_length);
+                        global_data.chr_interval_count[chr] = (global_data.chr_interval_count[chr] || 0) + 1;
+                    },
+                    complete: async () => {
+                        try {
+                            $("#example-loading").prop("hidden", true);
+                            $("#file-validation").prop("hidden", false);
+                            update_operation_detail("Summarizing interval statistics...");
 
-                    let chr_intervals = [];
-                    for (const [chrom, lengths] of Object.entries(data.chr_interval_lengths)) {
-                        chr_intervals.push({
-                            chr: chrom,
-                            min: math.min(lengths),
-                            max: math.max(lengths),
-                            mean: math.mean(lengths).toFixed(2),
-                            median: math.median(lengths).toFixed(2),
-                            mode: math.mode(lengths)[0],
-                        });
-                    }
-                    build_table(chr_intervals);
+                            if (!(data.delimiter == "\t")) {
+                                add_table_row({ title: "File delimiter", value: delimiter_string(data.delimiter), warn: true, validation: true });
+                            } else {
+                                add_table_row({ title: "File delimiter", value: delimiter_string(data.delimiter), validation: true });
+                            }
+                            if (!(data.newline == "\n")) {
+                                add_table_row({ title: "File newline", value: newline_string(data.newline), warn: true, validation: true });
+                            } else {
+                                add_table_row({ title: "File newline", value: newline_string(data.newline), validation: true });
+                            }
+                            if (!(data.missing_data == 0)) {
+                                add_table_row({ title: "Incomplete data on line", value: data.missing_data, warn: true, validation: true });
+                                resolve();
+                                return;
+                            }
 
-                    // sort by start, asc
-                    bed.sort((a, b) => (a[1] > b[1] ? 1 : a[1] < b[1] ? -1 : 0));
-                    // sort by chrom, asc
-                    bed.sort((a, b) => (a[0] > b[0] ? 1 : a[0] < b[0] ? -1 : 0));
-                    build_input_test();
-                    // convert bed to string
-                    let str = "";
-                    bed.map((a) => (str += a.join("\t") + "\n"));
-                    await CLI.fs.writeFile("a.bed", str);
-                    global_data.chromosomes.sort(sort_alphanum);
-                }
-            },
+                            if (data.zero_length_intervals > 0) {
+                                add_table_row({ title: "0-length intervals", value: data.zero_length_intervals.toLocaleString(), warn: true, validation: true });
+                            } else {
+                                add_table_row({ title: "0-length intervals", value: data.zero_length_intervals.toLocaleString(), validation: true });
+                            }
+                            add_table_row({ title: "BED fields", value: data.n_of_fields.join(",") });
+                            add_table_row({ title: "Total interval count", value: data.interval_count.toLocaleString(), warn: stream_aborted, validation: stream_aborted });
+                            add_table_row({ title: "Total nucleotides", value: data.interval_length_total.toLocaleString() });
+
+                            await add_plot_div("interval-size-dist", "Interval length distribution", 2);
+                            const trace = {
+                                x: data.interval_lengths,
+                                type: "histogram",
+                                histnorm: "probability density",
+                                marker: { color: aesthetics.palette[0] },
+                            };
+                            let layout = {
+                                height: 225,
+                                font: aesthetics.labelfont,
+                                padding: { t: 0, r: 15 },
+                                margin: { t: 0, r: 15 },
+                                xaxis: { title: "Interval length", automargin: true },
+                                yaxis: { title: "Density", automargin: true },
+                                legend: { font: { size: 16 } },
+                            };
+                            Plotly.newPlot("interval-size-dist-plot", [trace], layout, plot_config);
+
+                            let chr_intervals = [];
+                            for (const [chrom, lengths] of Object.entries(data.chr_interval_lengths)) {
+                                chr_intervals.push({
+                                    chr: chrom,
+                                    min: math.min(lengths),
+                                    max: math.max(lengths),
+                                    mean: math.mean(lengths).toFixed(2),
+                                    median: math.median(lengths).toFixed(2),
+                                    mode: math.mode(lengths)[0],
+                                });
+                            }
+                            build_table(chr_intervals);
+
+                            bed.sort((a, b) => (a[1] > b[1] ? 1 : a[1] < b[1] ? -1 : 0));
+                            bed.sort((a, b) => (a[0] > b[0] ? 1 : a[0] < b[0] ? -1 : 0));
+                            build_input_test();
+                            const stageToken = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+                            global_data.stage_token = stageToken;
+                            global_data.user_bed_error = null;
+                            update_operation_detail("Staging BED in browser DuckDB...");
+                            set_runtime_status("Staging BED in browser DuckDB...", "warning");
+                            global_data.user_bed_promise = stage_user_bed(bed, stageToken)
+                                .then((staged) => {
+                                    if (staged && global_data.stage_token === stageToken) {
+                                        set_runtime_status("webR + Rduckhts backend ready.", "success");
+                                    }
+                                    return staged;
+                                })
+                                .catch((error) => {
+                                    if (global_data.stage_token === stageToken) {
+                                        global_data.user_bed_error = error;
+                                        set_runtime_status(`Failed to stage BED in DuckDB: ${error.message ?? String(error)}`, "danger");
+                                    }
+                                    console.error(error);
+                                    return false;
+                                });
+                            const staged = await global_data.user_bed_promise;
+                            if (!staged && global_data.user_bed_error) {
+                                throw global_data.user_bed_error;
+                            }
+                            global_data.chromosomes.sort(sort_alphanum);
+                            resolve();
+                        } catch (error) {
+                            reject(error);
+                        }
+                    },
+                    error: (error) => reject(error),
+                });
+            });
         });
+        add_table_row({ title: "Load time", value: format_duration(durationMs) });
     }
 
     const file_upload = (event) => {
@@ -1212,19 +1670,32 @@
             interval_count_filtered: 0,
             chr_prefix: true,
             previous_primary_action: "Calculate interval densities",
-            previous_secondary_action: "gap",
+            previous_secondary_action: "Centromeres",
             previous_genome: "hg38",
             chromosomes: [],
+            stage_token: null,
+            user_bed_promise: null,
+            user_bed_error: null,
         };
 
         if (global_data.file_obj) {
             if (url) {
-                process_remote_file({ file: file_obj })
+                void process_remote_file({ file: file_obj }).catch((error) => {
+                    console.error(error);
+                    $("#example-loading").prop("hidden", true);
+                    $("#file-size-warning").prop("hidden", false);
+                    $("#file-size-warning").html(`Failed to fetch remote BED: ${error.message ?? String(error)}`);
+                });
             } else {
-                process_local_file({
+                void process_local_file({
                     file: file_obj,
                     download: event.type == "click" ? true : false,
-                })
+                }).catch((error) => {
+                    console.error(error);
+                    $("#example-loading").prop("hidden", true);
+                    $("#file-size-warning").prop("hidden", false);
+                    $("#file-size-warning").html(`Failed to process BED: ${error.message ?? String(error)}`);
+                });
             }
         }
     };
@@ -1304,6 +1775,9 @@
             $("#local-file-upload").prop("hidden", true)
             $("#remote-file-upload").prop("hidden", false)
         })
+        void warm_duck_backend().catch(() => {
+            // Status text is updated in warm_duck_backend().
+        });
     });
 </script>
 
