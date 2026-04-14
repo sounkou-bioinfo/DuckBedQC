@@ -318,14 +318,15 @@
 <div class="offcanvas offcanvas-start" tabindex="-1" id="offcanvas-Intersect"
     aria-labelledby="offcanvas-intersect-gap-label">
     <div class="offcanvas-header">
-        <h5 class="offcanvas-title" id="offcanvas-intersect-gap-label">Interpreting overlap plots</h5>
+        <h5 class="offcanvas-title" id="offcanvas-intersect-gap-label">Interpreting annotation coverage</h5>
         <button type="button" class="btn-close text-reset" data-bs-dismiss="offcanvas" aria-label="Close"></button>
     </div>
     <div class="offcanvas-body">
         <div class="row pb-3">
                 <div class="card-body">Intersecting a BED with known annotations can help narrow down likely genome builds
                 and confirm that the intervals match the kind of regions you expect. In this fork, DuckBedQC ships
-                bundled centromere, whole-gene, exon, and CDS tables that are queried through DuckDB in the browser.
+                bundled centromere, whole-gene locus, exon, and CDS tables that are queried through DuckDB in the browser.
+                The coverage view reports annotation interval hit rate, annotation base coverage, and exports covered or uncovered annotation BED rows for kit-style review.
             </div>
         </div>
         <div class="row pb-3">
@@ -426,6 +427,49 @@ SELECT
 FROM ${sourceTable}
 ORDER BY norm_chrom, start, "end"
 `;
+    const build_merged_interval_table_sql = (sourceTable, targetTable) => `
+CREATE OR REPLACE TABLE ${targetTable} AS
+WITH ordered AS (
+  SELECT
+    chrom,
+    norm_chrom,
+    start,
+    "end",
+    max("end") OVER (
+      PARTITION BY norm_chrom
+      ORDER BY start, "end"
+      ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+    ) AS prev_max_end
+  FROM ${sourceTable}
+),
+flagged AS (
+  SELECT
+    *,
+    CASE
+      WHEN prev_max_end IS NULL OR start > prev_max_end THEN 1
+      ELSE 0
+    END AS new_group
+  FROM ordered
+),
+grouped AS (
+  SELECT
+    *,
+    sum(new_group) OVER (
+      PARTITION BY norm_chrom
+      ORDER BY start, "end"
+      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS group_id
+  FROM flagged
+)
+SELECT
+  min(chrom) AS chrom,
+  min(start) AS start,
+  max("end") AS "end",
+  norm_chrom
+FROM grouped
+GROUP BY norm_chrom, group_id
+ORDER BY norm_chrom, start, "end"
+`;
     const annotationSources = {
         hg38: {
             Centromeres: {
@@ -437,8 +481,8 @@ ORDER BY norm_chrom, start, "end"
             "Ensembl gene (whole)": {
                 kind: "bed",
                 tableName: "annotation_hg38_genes",
-                url: "data/GRCh38_genes.bed",
-                vfsPath: "/duckbedqc/data/GRCh38_genes.bed",
+                url: "data/GRCh38_gene_loci.bed",
+                vfsPath: "/duckbedqc/data/GRCh38_gene_loci.bed",
             },
             "Ensembl gene (exon)": {
                 kind: "bed",
@@ -463,8 +507,8 @@ ORDER BY norm_chrom, start, "end"
             "Ensembl gene (whole)": {
                 kind: "bed",
                 tableName: "annotation_hg19_genes",
-                url: "data/GRCh37_genes.bed",
-                vfsPath: "/duckbedqc/data/GRCh37_genes.bed",
+                url: "data/GRCh37_gene_loci.bed",
+                vfsPath: "/duckbedqc/data/GRCh37_gene_loci.bed",
             },
             "Ensembl gene (exon)": {
                 kind: "bed",
@@ -678,6 +722,47 @@ END
         await execute_sql(`ALTER TABLE ${normalizedTable} RENAME TO ${tableName}`);
     };
 
+    const merge_interval_table = async (sourceTable, targetTable) => {
+        await execute_sql(`DROP TABLE IF EXISTS ${targetTable}`);
+        await execute_sql(build_merged_interval_table_sql(sourceTable, targetTable));
+    };
+
+    const query_tsv = async (sql, outputPath) => {
+        await run_r(`
+query_result <- DBI::dbGetQuery(con, "${escape_r_string(sql).replaceAll('"', '\\"')}")
+utils::write.table(
+  query_result,
+  file = '${escape_r_string(outputPath)}',
+  sep = '\\t',
+  row.names = FALSE,
+  quote = FALSE
+)
+`);
+        const bytes = await duckBackend.webR.FS.readFile(outputPath);
+        return Papa.parse(textDecoder.decode(bytes), {
+            header: true,
+            delimiter: "\t",
+            skipEmptyLines: true,
+        }).data;
+    };
+
+    const copy_query_to_file = async (sql, outputPath) => {
+        await execute_sql(`COPY (${sql}) TO '${outputPath}' WITH (FORMAT CSV, DELIMITER '\t', HEADER FALSE)`);
+    };
+
+    const download_webr_file = async (path, filename, mimeType = "text/plain;charset=utf-8") => {
+        const bytes = await duckBackend.webR.FS.readFile(path);
+        const blob = new Blob([bytes], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+
     const warm_duck_backend = async () => {
         if (duckBackend.initPromise) {
             return duckBackend.initPromise;
@@ -754,6 +839,7 @@ END
                 return false;
             }
             await execute_sql("CREATE OR REPLACE TABLE user_intervals AS SELECT CAST(NULL AS VARCHAR) AS chrom, CAST(NULL AS BIGINT) AS start, CAST(NULL AS BIGINT) AS \"end\", CAST(NULL AS VARCHAR) AS norm_chrom WHERE FALSE");
+            await execute_sql("CREATE OR REPLACE TABLE user_intervals_merged AS SELECT CAST(NULL AS VARCHAR) AS chrom, CAST(NULL AS BIGINT) AS start, CAST(NULL AS BIGINT) AS \"end\", CAST(NULL AS VARCHAR) AS norm_chrom WHERE FALSE");
             return true;
         }
 
@@ -767,6 +853,7 @@ END
         await normalize_interval_table("user_intervals_raw");
         await execute_sql("DROP TABLE IF EXISTS user_intervals");
         await execute_sql("ALTER TABLE user_intervals_raw RENAME TO user_intervals");
+        await merge_interval_table("user_intervals", "user_intervals_merged");
         return global_data.stage_token === stageToken;
     };
 
@@ -812,61 +899,117 @@ END
         return staged;
     };
 
-    const query_overlap_counts = async (annotationTable, overlapMode = "count_all") => {
-        const outputPath = "/duckbedqc/query/overlap_counts.tsv";
-        const sql = overlapMode === "merged_interval_exists" ? `
-SELECT
-  u.chrom AS chrom,
-  COUNT(*) AS overlap_count
-FROM user_intervals u
-ASOF LEFT JOIN ${annotationTable} a
-  ON u.norm_chrom = a.norm_chrom
- AND a.start < u."end"
-WHERE a."end" > u.start
-GROUP BY 1
-ORDER BY 1
-` : overlapMode === "distinct_interval_exists" ? `
-SELECT
-  u.chrom AS chrom,
-  COUNT(*) AS overlap_count
-FROM user_intervals u
-WHERE EXISTS (
-  SELECT 1
+    const sanitize_track_slug = (track) => track.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+
+    const format_integer = (value) => Number(value || 0).toLocaleString();
+
+    const format_percent = (fraction) => `${(100 * Number(fraction || 0)).toFixed(2)}%`;
+
+    const normalize_annotation_summary_row = (row) => ({
+        chrom: row.chrom,
+        annotation_interval_count: Number(row.annotation_interval_count || 0),
+        overlapped_interval_count: Number(row.overlapped_interval_count || 0),
+        overlapped_interval_fraction: Number(row.overlapped_interval_fraction || 0),
+        annotation_base_count: Number(row.annotation_base_count || 0),
+        covered_base_count: Number(row.covered_base_count || 0),
+        covered_base_fraction: Number(row.covered_base_fraction || 0),
+    });
+
+    const build_annotation_summary_sql = (annotationTable) => `
+WITH annotation_overlap AS (
+  SELECT
+    a.chrom AS chrom,
+    a.start AS start,
+    a."end" AS "end",
+    a."end" - a.start AS annotation_bases,
+    CASE WHEN u."end" > a.start THEN 1 ELSE 0 END AS is_hit
   FROM ${annotationTable} a
-  WHERE u.norm_chrom = a.norm_chrom
-    AND u.start < a."end"
-    AND a.start < u."end"
+  ASOF LEFT JOIN user_intervals_merged u
+    ON a.norm_chrom = u.norm_chrom
+   AND u.start < a."end"
+),
+covered_bases AS (
+  SELECT
+    a.chrom AS chrom,
+    SUM(least(a."end", u."end") - greatest(a.start, u.start))::BIGINT AS covered_base_count
+  FROM ${annotationTable} a
+  INNER JOIN user_intervals_merged u
+    ON a.norm_chrom = u.norm_chrom
+   AND a.start < u."end"
+   AND u.start < a."end"
+  GROUP BY 1
+),
+summarized AS (
+  SELECT
+    o.chrom AS chrom,
+    COUNT(*)::BIGINT AS annotation_interval_count,
+    SUM(CAST(o.is_hit AS BIGINT))::BIGINT AS overlapped_interval_count,
+    SUM(o.annotation_bases)::BIGINT AS annotation_base_count,
+    COALESCE(max(c.covered_base_count), 0)::BIGINT AS covered_base_count
+  FROM annotation_overlap o
+  LEFT JOIN covered_bases c
+    ON o.chrom = c.chrom
+  GROUP BY 1
 )
-GROUP BY 1
-ORDER BY 1
-` : `
 SELECT
-  u.chrom AS chrom,
-  COUNT(*) AS overlap_count
-FROM user_intervals u
-INNER JOIN ${annotationTable} a
-  ON u.norm_chrom = a.norm_chrom
- AND u.start < a."end"
- AND a.start < u."end"
-GROUP BY 1
-ORDER BY 1
+  chrom,
+  annotation_interval_count,
+  overlapped_interval_count,
+  CASE
+    WHEN annotation_interval_count > 0 THEN overlapped_interval_count::DOUBLE / annotation_interval_count
+    ELSE 0
+  END AS overlapped_interval_fraction,
+  annotation_base_count,
+  covered_base_count,
+  CASE
+    WHEN annotation_base_count > 0 THEN covered_base_count::DOUBLE / annotation_base_count
+    ELSE 0
+  END AS covered_base_fraction
+FROM summarized
+ORDER BY chrom
 `;
-        await run_r(`
-overlap_counts <- DBI::dbGetQuery(con, "${escape_r_string(sql).replaceAll('"', '\\"')}")
-utils::write.table(
-  overlap_counts,
-  file = '${escape_r_string(outputPath)}',
-  sep = '\\t',
-  row.names = FALSE,
-  quote = FALSE
-)
-`);
-        const bytes = await duckBackend.webR.FS.readFile(outputPath);
-        return Papa.parse(textDecoder.decode(bytes), {
-            header: true,
-            delimiter: "\t",
-            skipEmptyLines: true,
-        }).data;
+
+    const build_overlapping_annotation_sql = (annotationTable) => `
+SELECT
+  a.chrom,
+  a.start,
+  a."end"
+FROM ${annotationTable} a
+ASOF LEFT JOIN user_intervals_merged u
+  ON a.norm_chrom = u.norm_chrom
+ AND u.start < a."end"
+WHERE u."end" > a.start
+ORDER BY a.chrom, a.start, a."end"
+`;
+
+    const build_uncovered_annotation_sql = (annotationTable) => `
+SELECT
+  a.chrom,
+  a.start,
+  a."end"
+FROM ${annotationTable} a
+ASOF LEFT JOIN user_intervals_merged u
+  ON a.norm_chrom = u.norm_chrom
+ AND u.start < a."end"
+WHERE u."end" IS NULL
+   OR u."end" <= a.start
+ORDER BY a.chrom, a.start, a."end"
+`;
+
+    const query_annotation_coverage = async (annotationTable, exportPrefix) => {
+        const summaryPath = `/duckbedqc/query/${exportPrefix}_annotation_summary.tsv`;
+        const overlappingPath = `/duckbedqc/query/${exportPrefix}_annotation_overlapping.bed`;
+        const uncoveredPath = `/duckbedqc/query/${exportPrefix}_annotation_uncovered.bed`;
+        const summaryRows = (await query_tsv(build_annotation_summary_sql(annotationTable), summaryPath))
+            .map(normalize_annotation_summary_row);
+        await copy_query_to_file(build_overlapping_annotation_sql(annotationTable), overlappingPath);
+        await copy_query_to_file(build_uncovered_annotation_sql(annotationTable), uncoveredPath);
+        return {
+            summaryRows,
+            summaryPath,
+            overlappingPath,
+            uncoveredPath,
+        };
     };
 
     const sort_alphanum = (a, b) => a.localeCompare(b, "en", { numeric: true });
@@ -1002,30 +1145,116 @@ utils::write.table(
         window.scrollTo({ top: y, behavior: "smooth" });
     };
 
+    const summarize_annotation_coverage = (rows) => rows.reduce((acc, row) => {
+        acc.annotation_interval_count += row.annotation_interval_count;
+        acc.overlapped_interval_count += row.overlapped_interval_count;
+        acc.annotation_base_count += row.annotation_base_count;
+        acc.covered_base_count += row.covered_base_count;
+        return acc;
+    }, {
+        annotation_interval_count: 0,
+        overlapped_interval_count: 0,
+        annotation_base_count: 0,
+        covered_base_count: 0,
+    });
+
+    const build_annotation_summary_cards_html = (totals) => {
+        const intervalFraction = totals.annotation_interval_count > 0
+            ? totals.overlapped_interval_count / totals.annotation_interval_count
+            : 0;
+        const baseFraction = totals.annotation_base_count > 0
+            ? totals.covered_base_count / totals.annotation_base_count
+            : 0;
+        return `
+            <div class="row g-3 pb-3">
+                <div class="col-md-3">
+                    <div class="card h-100">
+                        <div class="card-body">
+                            <div class="text-muted small">Annotation intervals hit</div>
+                            <div class="fs-4">${format_percent(intervalFraction)}</div>
+                            <div class="small text-muted">${format_integer(totals.overlapped_interval_count)} / ${format_integer(totals.annotation_interval_count)}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card h-100">
+                        <div class="card-body">
+                            <div class="text-muted small">Annotation bases covered</div>
+                            <div class="fs-4">${format_percent(baseFraction)}</div>
+                            <div class="small text-muted">${format_integer(totals.covered_base_count)} / ${format_integer(totals.annotation_base_count)} bp</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card h-100">
+                        <div class="card-body">
+                            <div class="text-muted small">Annotation intervals total</div>
+                            <div class="fs-4">${format_integer(totals.annotation_interval_count)}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card h-100">
+                        <div class="card-body">
+                            <div class="text-muted small">Annotation bases total</div>
+                            <div class="fs-4">${format_integer(totals.annotation_base_count)}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+    };
+
+    const build_annotation_chromosome_table_html = (rows) => `
+        <div class="table-responsive pt-2">
+            <table class="table table-sm table-striped align-middle mb-0">
+                <thead>
+                    <tr>
+                        <th>Chromosome</th>
+                        <th class="text-end">Intervals</th>
+                        <th class="text-end">Intervals hit</th>
+                        <th class="text-end">Interval hit %</th>
+                        <th class="text-end">Bases</th>
+                        <th class="text-end">Bases covered</th>
+                        <th class="text-end">Base coverage %</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows.map((row) => `
+                        <tr>
+                            <td>${row.chrom}</td>
+                            <td class="text-end">${format_integer(row.annotation_interval_count)}</td>
+                            <td class="text-end">${format_integer(row.overlapped_interval_count)}</td>
+                            <td class="text-end">${format_percent(row.overlapped_interval_fraction)}</td>
+                            <td class="text-end">${format_integer(row.annotation_base_count)}</td>
+                            <td class="text-end">${format_integer(row.covered_base_count)}</td>
+                            <td class="text-end">${format_percent(row.covered_base_fraction)}</td>
+                        </tr>
+                    `).join("")}
+                </tbody>
+            </table>
+        </div>
+    `;
+
     const duckdb_intersect = async (genome, track, chromosomes) => {
         if (global_data.user_bed_promise && !global_data.user_bed_staged) {
             update_operation_detail("Waiting for browser DuckDB backend preparation...");
         }
         await ensure_user_bed_staged();
         const cacheKey = `${global_data.stage_token}::${genome}::${track}`;
-        let overlapRows = global_data.overlap_cache[cacheKey];
-        if (!overlapRows) {
+        let coverage = global_data.overlap_cache[cacheKey];
+        if (!coverage) {
             const annotationTable = await stage_annotation_table(genome, track);
-            update_operation_detail(`Computing ${track.toLowerCase()} overlaps for ${genome}...`);
-            const overlapMode = track === "Ensembl gene (exon)" || track === "Ensembl gene (CDS)"
-                ? "merged_interval_exists"
-                : track.startsWith("Ensembl")
-                    ? "distinct_interval_exists"
-                    : "count_all";
-            overlapRows = await query_overlap_counts(annotationTable, overlapMode);
-            global_data.overlap_cache[cacheKey] = overlapRows;
+            update_operation_detail(`Computing ${track.toLowerCase()} annotation coverage for ${genome}...`);
+            const exportPrefix = `${global_data.stage_token.replace(/[^a-zA-Z0-9]+/g, "_")}_${genome}_${sanitize_track_slug(track)}`;
+            coverage = await query_annotation_coverage(annotationTable, exportPrefix);
+            global_data.overlap_cache[cacheKey] = coverage;
         } else {
-            update_operation_detail(`Using cached ${track.toLowerCase()} overlap counts for ${genome}...`);
+            update_operation_detail(`Using cached ${track.toLowerCase()} annotation coverage for ${genome}...`);
         }
-        let chr_count = {};
-        overlapRows.forEach((row) => {
-            chr_count[row.chrom] = parseInt(row.overlap_count || "0", 10);
-        });
+        const perChromRows = coverage.summaryRows.slice().sort((a, b) => sort_alphanum(a.chrom, b.chrom));
+        const perChromMap = Object.fromEntries(perChromRows.map((row) => [row.chrom, row]));
+        const totals = summarize_annotation_coverage(perChromRows);
 
         let content = document.getElementById("content");
         let idx = global_data.input_test_count;
@@ -1041,26 +1270,56 @@ utils::write.table(
                 <div class="col-lg-11 p-0">
                     <div class="d-flex flex-row">
                         <div class="pe-2">
-                            <h6>${to_title(primary)} ${genome} ${secondary} overlap count</h6>
+                            <h6>${to_title(primary)} ${genome} ${secondary} annotation coverage</h6>
                         </div>
                         <a class="btn btn-primary btn-circle" data-bs-toggle="offcanvas" href="#offcanvas-${primary}" role="button" aria-controls="offcanvas-${primary}">?</a>
                     </div>
-                    <div class="row pt-1">
-                        <div class="col-12">
-                            <div id="hypothesis-${idx}-plot"></div>
+                    ${build_annotation_summary_cards_html(totals)}
+                    <div class="row pb-3">
+                        <div class="col-12 d-flex flex-wrap gap-2">
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="hypothesis-${idx}-download-summary">Download summary TSV</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="hypothesis-${idx}-download-overlapping">Download overlapping annotation BED</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="hypothesis-${idx}-download-uncovered">Download uncovered annotation BED</button>
                         </div>
                     </div>
+                    <div class="row pt-1">
+                        <div class="col-lg-6 col-12 pb-3">
+                            <div id="hypothesis-${idx}-interval-plot"></div>
+                        </div>
+                        <div class="col-lg-6 col-12 pb-3">
+                            <div id="hypothesis-${idx}-base-plot"></div>
+                        </div>
+                    </div>
+                    ${build_annotation_chromosome_table_html(perChromRows)}
                 </div>
             </div>
             `
         );
 
+        document.getElementById(`hypothesis-${idx}-download-summary`).addEventListener("click", () => {
+            void download_webr_file(coverage.summaryPath, `${genome}_${sanitize_track_slug(track)}_annotation_summary.tsv`, "text/tab-separated-values;charset=utf-8");
+        });
+        document.getElementById(`hypothesis-${idx}-download-overlapping`).addEventListener("click", () => {
+            void download_webr_file(coverage.overlappingPath, `${genome}_${sanitize_track_slug(track)}_overlapping.bed`);
+        });
+        document.getElementById(`hypothesis-${idx}-download-uncovered`).addEventListener("click", () => {
+            void download_webr_file(coverage.uncoveredPath, `${genome}_${sanitize_track_slug(track)}_uncovered.bed`);
+        });
+
         build_bar_plot(
             chromosomes,
-            chromosomes.map((chr) => chr_count[chr]),
+            chromosomes.map((chr) => 100 * (perChromMap[chr]?.overlapped_interval_fraction || 0)),
             "Chromosome",
-            "Overlap count",
-            `hypothesis-${idx}-plot`
+            "Annotation intervals overlapped (%)",
+            `hypothesis-${idx}-interval-plot`
+        );
+
+        build_bar_plot(
+            chromosomes,
+            chromosomes.map((chr) => 100 * (perChromMap[chr]?.covered_base_fraction || 0)),
+            "Chromosome",
+            "Annotation bases covered (%)",
+            `hypothesis-${idx}-base-plot`
         );
     };
 
@@ -1294,7 +1553,7 @@ utils::write.table(
                         }
                     );
                 } else if (action == "Intersect") {
-                    update_operation_detail(`Computing ${track.toLowerCase()} overlaps for ${genome}...`);
+                    update_operation_detail(`Computing ${track.toLowerCase()} annotation coverage for ${genome}...`);
                     await duckdb_intersect(genome, track, display_chroms);
                 } else {
                     console.log("Unaccounted for action selected.");
@@ -1336,13 +1595,13 @@ utils::write.table(
         } else if (primary == "Intersect") {
             $(`#hypothesis-secondary-wrapper-${idx}`).prop("hidden", false);
             if (secondary == "Centromeres") {
-                str = `If your intervals intersect with many centromeres across chromosomes, ${genome} may not be the underlying genome build of ${filename}.`;
+                str = `Measure how much of the bundled centromere annotation is hit or base-covered by ${filename}.`;
             } else if (secondary == "Ensembl gene (exon)") {
-                str = `Intersect the intervals in ${filename} with precomputed merged exon intervals bundled with DuckBedQC.`;
+                str = `Measure exon hit rate, exon base coverage, and export covered or uncovered exon loci for ${filename}.`;
             } else if (secondary == "Ensembl gene (CDS)") {
-                str = `Intersect the intervals in ${filename} with precomputed merged CDS intervals bundled with DuckBedQC.`;
+                str = `Measure CDS hit rate, CDS base coverage, and export covered or uncovered CDS loci for ${filename}.`;
             } else {
-                str = `Intersect the intervals in ${filename} with bundled whole-gene annotations using DuckDB in the browser.`;
+                str = `Measure whole-gene locus hit rate and base coverage for ${filename} against the bundled ${genome} annotation.`;
             }
         }
         $(`#hypothesis-blurb-${idx}`).html(str);
@@ -1587,7 +1846,7 @@ utils::write.table(
                             if (duckBackend.ready) {
                                 set_runtime_status("webR + Rduckhts backend ready.", "success");
                             } else {
-                                set_runtime_status("BED parsed. Browser DuckDB backend will start when you run an overlap analysis.", "muted");
+                                set_runtime_status("BED parsed. Preparing webR + Rduckhts backend in background...", "warning");
                             }
                             global_data.chromosomes.sort(sort_alphanum);
                             resolve();

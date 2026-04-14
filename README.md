@@ -13,9 +13,12 @@ on your BED file including calculating metrics based on the
 intervals and intersecting your file with various other
 annotations. This fork keeps the validation flow in JavaScript and runs overlap
 queries in-browser through `webR`, `duckdb`, and `Rduckhts`, installing
-`Rduckhts` from R-universe at runtime. Bundled centromere, whole-gene, merged
-exon, and merged CDS BED annotations are loaded into DuckDB for the overlap
-views.
+`Rduckhts` from R-universe at runtime. Bundled centromere, merged whole-gene
+locus, merged exon, and merged CDS BED annotations are loaded into DuckDB for
+annotation coverage views. For each annotation family, DuckBedQC reports the
+fraction of annotation intervals hit by the uploaded BED, the fraction of
+annotation bases covered by the BED, and exports overlapping or uncovered
+annotation BED rows for kit-style review.
 
 [BED file specification](https://samtools.github.io/hts-specs/BEDv1.pdf).
 
