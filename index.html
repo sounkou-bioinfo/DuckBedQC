@@ -141,7 +141,7 @@
             </div>
         </div>
         <div class="col-lg-8 mx-auto text-danger pt-2" id="file-size-warning" hidden></div>
-        <div class="col-lg-8 mx-auto text-muted small pt-2" id="runtime-status">Initializing webR + Rduckhts backend...</div>
+        <div class="col-lg-8 mx-auto text-muted small pt-2" id="runtime-status">Browser DuckDB backend starts on first overlap analysis.</div>
     </div>
 
     <div id="introduction">
@@ -226,8 +226,8 @@
         <div class="px-4 py-5 my-5 text-center">
             <h1 class="display-5 fw-bold">More complex analyses</h1>
             <div class="col-lg-6 mx-auto">
-                <p class="lead mb-4">For instance, you can compare your intervals against bundled centromere and gene
-                    annotations from multiple builds to sanity-check genome build assumptions and overall BED content.</p>
+                <p class="lead mb-4">For instance, you can compare your intervals against bundled centromere, gene,
+                    exon, and CDS annotations from multiple builds to sanity-check genome build assumptions and overall BED content.</p>
             </div>
         </div>
     </div>
@@ -323,9 +323,9 @@
     </div>
     <div class="offcanvas-body">
         <div class="row pb-3">
-            <div class="card-body">Intersecting a BED with known annotations can help narrow down likely genome builds
+                <div class="card-body">Intersecting a BED with known annotations can help narrow down likely genome builds
                 and confirm that the intervals match the kind of regions you expect. In this fork, DuckBedQC ships
-                bundled centromere and whole-gene tables that are queried through DuckDB in the browser.
+                bundled centromere, whole-gene, exon, and CDS tables that are queried through DuckDB in the browser.
             </div>
         </div>
         <div class="row pb-3">
@@ -415,104 +415,15 @@
         shelter: null,
         ready: false,
         stagedAnnotations: new Set(),
+        genomeChromosomeLengths: new Map(),
     };
-    const build_exon_annotation_sql = (sourceTable, targetTable) => `
+    const build_normalized_interval_table_sql = (sourceTable, targetTable) => `
 CREATE OR REPLACE TABLE ${targetTable} AS
-WITH genes AS (
-  SELECT
-    chrom,
-    start AS gene_start,
-    "end" AS gene_end,
-    name,
-    score,
-    strand,
-    thick_start,
-    thick_end,
-    CAST(block_count AS BIGINT) AS block_count,
-    regexp_split_to_array(regexp_replace(block_sizes, ',+$', ''), ',') AS block_size_parts,
-    regexp_split_to_array(regexp_replace(block_starts, ',+$', ''), ',') AS block_start_parts
-  FROM ${sourceTable}
-  WHERE block_count IS NOT NULL
-    AND block_count > 0
-    AND block_sizes IS NOT NULL
-    AND block_starts IS NOT NULL
-),
-expanded AS (
-  SELECT
-    chrom,
-    gene_start + CAST(list_extract(block_start_parts, idx.i) AS BIGINT) AS start,
-    gene_start + CAST(list_extract(block_start_parts, idx.i) AS BIGINT) + CAST(list_extract(block_size_parts, idx.i) AS BIGINT) AS "end",
-    name,
-    score,
-    strand,
-    idx.i AS block_index,
-    thick_start,
-    thick_end
-  FROM genes
-  CROSS JOIN unnest(range(1, block_count + 1)) AS idx(i)
-)
 SELECT
-  chrom,
-  start,
-  "end",
-  name,
-  score,
-  strand,
-  block_index
-FROM expanded
-WHERE "end" > start
-ORDER BY chrom, start, "end", name, block_index
-`;
-    const build_cds_annotation_sql = (sourceTable, targetTable) => `
-CREATE OR REPLACE TABLE ${targetTable} AS
-WITH genes AS (
-  SELECT
-    chrom,
-    start AS gene_start,
-    name,
-    score,
-    strand,
-    thick_start,
-    thick_end,
-    CAST(block_count AS BIGINT) AS block_count,
-    regexp_split_to_array(regexp_replace(block_sizes, ',+$', ''), ',') AS block_size_parts,
-    regexp_split_to_array(regexp_replace(block_starts, ',+$', ''), ',') AS block_start_parts
-  FROM ${sourceTable}
-  WHERE block_count IS NOT NULL
-    AND block_count > 0
-    AND block_sizes IS NOT NULL
-    AND block_starts IS NOT NULL
-    AND thick_start IS NOT NULL
-    AND thick_end IS NOT NULL
-    AND thick_end > thick_start
-),
-expanded AS (
-  SELECT
-    chrom,
-    gene_start + CAST(list_extract(block_start_parts, idx.i) AS BIGINT) AS exon_start,
-    gene_start + CAST(list_extract(block_start_parts, idx.i) AS BIGINT) + CAST(list_extract(block_size_parts, idx.i) AS BIGINT) AS exon_end,
-    name,
-    score,
-    strand,
-    idx.i AS block_index,
-    thick_start,
-    thick_end
-  FROM genes
-  CROSS JOIN unnest(range(1, block_count + 1)) AS idx(i)
-)
-SELECT
-  chrom,
-  greatest(exon_start, thick_start) AS start,
-  least(exon_end, thick_end) AS "end",
-  name,
-  score,
-  strand,
-  block_index
-FROM expanded
-WHERE exon_end > thick_start
-  AND exon_start < thick_end
-  AND least(exon_end, thick_end) > greatest(exon_start, thick_start)
-ORDER BY chrom, start, "end", name, block_index
+  *,
+  ${normalize_join_chromosome_expr("chrom")} AS norm_chrom
+FROM ${sourceTable}
+ORDER BY norm_chrom, start, "end"
 `;
     const annotationSources = {
         hg38: {
@@ -529,16 +440,16 @@ ORDER BY chrom, start, "end", name, block_index
                 vfsPath: "/duckbedqc/data/GRCh38_genes.bed",
             },
             "Ensembl gene (exon)": {
-                kind: "derived",
+                kind: "bed",
                 tableName: "annotation_hg38_genes_exons",
-                sourceTrack: "Ensembl gene (whole)",
-                sqlBuilder: build_exon_annotation_sql,
+                url: "data/GRCh38_exons.bed",
+                vfsPath: "/duckbedqc/data/GRCh38_exons.bed",
             },
             "Ensembl gene (CDS)": {
-                kind: "derived",
+                kind: "bed",
                 tableName: "annotation_hg38_genes_cds",
-                sourceTrack: "Ensembl gene (whole)",
-                sqlBuilder: build_cds_annotation_sql,
+                url: "data/GRCh38_cds.bed",
+                vfsPath: "/duckbedqc/data/GRCh38_cds.bed",
             },
         },
         hg19: {
@@ -555,16 +466,16 @@ ORDER BY chrom, start, "end", name, block_index
                 vfsPath: "/duckbedqc/data/GRCh37_genes.bed",
             },
             "Ensembl gene (exon)": {
-                kind: "derived",
+                kind: "bed",
                 tableName: "annotation_hg19_genes_exons",
-                sourceTrack: "Ensembl gene (whole)",
-                sqlBuilder: build_exon_annotation_sql,
+                url: "data/GRCh37_exons.bed",
+                vfsPath: "/duckbedqc/data/GRCh37_exons.bed",
             },
             "Ensembl gene (CDS)": {
-                kind: "derived",
+                kind: "bed",
                 tableName: "annotation_hg19_genes_cds",
-                sourceTrack: "Ensembl gene (whole)",
-                sqlBuilder: build_cds_annotation_sql,
+                url: "data/GRCh37_cds.bed",
+                vfsPath: "/duckbedqc/data/GRCh37_cds.bed",
             },
         },
     };
@@ -677,20 +588,28 @@ ORDER BY chrom, start, "end", name, block_index
     };
 
     const fetch_genome_chromosome_lengths = async (genome, preferChrPrefix) => {
+        const cacheKey = `${genome}::${preferChrPrefix ? "chr" : "plain"}`;
+        const cached = duckBackend.genomeChromosomeLengths.get(cacheKey);
+        if (cached) {
+            return cached;
+        }
         const response = await new Promise((resolve, reject) => {
             jQuery
                 .getJSON(`https://api.genome.ucsc.edu/list/chromosomes?genome=${genome}`, resolve)
                 .fail((_jqXHR, textStatus, errorThrown) => reject(new Error(errorThrown || textStatus || `Failed to fetch chromosome sizes for ${genome}`)));
         });
         if (preferChrPrefix) {
-            return Object.fromEntries(
+            const chromosomeLengths = Object.fromEntries(
                 Object.entries(response.chromosomes).map(([chrom, len]) => [normalize_chromosome_label(chrom, true), len])
             );
+            duckBackend.genomeChromosomeLengths.set(cacheKey, chromosomeLengths);
+            return chromosomeLengths;
         }
         const chromosome_lengths = {};
         Object.keys(response.chromosomes).forEach((chrom) => {
             chromosome_lengths[normalize_chromosome_label(chrom.substring(3), false)] = response.chromosomes[chrom];
         });
+        duckBackend.genomeChromosomeLengths.set(cacheKey, chromosome_lengths);
         return chromosome_lengths;
     };
 
@@ -738,11 +657,20 @@ END
         await run_r(`DBI::dbExecute(con, "${escape_r_string(sql).replaceAll('"', '\\"')}")`);
     };
 
+    const normalize_interval_table = async (tableName) => {
+        const normalizedTable = `${tableName}__normalized`;
+        await execute_sql(`DROP TABLE IF EXISTS ${normalizedTable}`);
+        await execute_sql(build_normalized_interval_table_sql(tableName, normalizedTable));
+        await execute_sql(`DROP TABLE ${tableName}`);
+        await execute_sql(`ALTER TABLE ${normalizedTable} RENAME TO ${tableName}`);
+    };
+
     const warm_duck_backend = async () => {
         if (duckBackend.initPromise) {
             return duckBackend.initPromise;
         }
         duckBackend.initPromise = (async () => {
+            update_operation_detail("Starting webR runtime...", "Preparing browser backend");
             set_runtime_status("Installing browser backend packages...", "warning");
             const webR = new WebR();
             await webR.init();
@@ -752,14 +680,18 @@ END
             await ensure_webr_dir("/duckbedqc/data");
             await ensure_webr_dir("/duckbedqc/query");
 
+            update_operation_detail("Installing DBI and duckdb packages in webR...");
             await webR.installPackages(["DBI", "duckdb"], { repos: "https://repo.r-wasm.org/" });
+            update_operation_detail("Installing Rduckhts from R-universe...");
             await webR.installPackages(["Rduckhts"], { repos: ["https://rgenomicsetl.r-universe.dev", "https://repo.r-wasm.org/"], mount: false });
 
             duckBackend.shelter = await new webR.Shelter();
+            update_operation_detail("Opening browser DuckDB connection...");
             await run_r("library(DBI)");
             await run_r("library(duckdb)");
             await run_r("library(Rduckhts)");
             await run_r("con <- DBI::dbConnect(duckdb::duckdb(config = list(allow_unsigned_extensions = 'true')))");
+            update_operation_detail("Loading the duckhts extension into DuckDB...");
             await run_r("rduckhts_load(con)");
             duckBackend.ready = true;
             set_runtime_status("webR + Rduckhts backend ready.", "success");
@@ -781,21 +713,17 @@ END
             throw new Error(`No annotation source configured for ${genome} ${track}`);
         }
         if (duckBackend.stagedAnnotations.has(source.tableName)) {
+            update_operation_detail(`Using cached ${track.toLowerCase()} annotation for ${genome}...`);
             return source.tableName;
         }
-        if (source.kind === "derived") {
-            const sourceTable = await stage_annotation_table(genome, source.sourceTrack);
-            await execute_sql(source.sqlBuilder(sourceTable, source.tableName));
-            duckBackend.stagedAnnotations.add(source.tableName);
-            return source.tableName;
-        }
-
+        update_operation_detail(`Loading bundled ${track.toLowerCase()} annotation for ${genome}...`);
         const response = await fetch(source.url, { cache: "no-store" });
         if (!response.ok) {
             throw new Error(`Failed to fetch annotation: ${source.url}`);
         }
         await duckBackend.webR.FS.writeFile(source.vfsPath, new Uint8Array(await response.arrayBuffer()));
         await run_r(`rduckhts_bed(con, '${source.tableName}', '${escape_r_string(source.vfsPath)}', overwrite = TRUE)`);
+        await normalize_interval_table(source.tableName);
         duckBackend.stagedAnnotations.add(source.tableName);
         return source.tableName;
     };
@@ -807,7 +735,7 @@ END
             if (global_data.stage_token !== stageToken) {
                 return false;
             }
-            await execute_sql("CREATE OR REPLACE TABLE user_intervals AS SELECT CAST(NULL AS VARCHAR) AS chrom, CAST(NULL AS BIGINT) AS start, CAST(NULL AS BIGINT) AS \"end\" WHERE FALSE");
+            await execute_sql("CREATE OR REPLACE TABLE user_intervals AS SELECT CAST(NULL AS VARCHAR) AS chrom, CAST(NULL AS BIGINT) AS start, CAST(NULL AS BIGINT) AS \"end\", CAST(NULL AS VARCHAR) AS norm_chrom WHERE FALSE");
             return true;
         }
 
@@ -817,25 +745,78 @@ END
         if (global_data.stage_token !== stageToken) {
             return false;
         }
-        await run_r(`rduckhts_bed(con, 'user_intervals', '${escape_r_string(userBedPath)}', overwrite = TRUE)`);
+        await run_r(`rduckhts_bed(con, 'user_intervals_raw', '${escape_r_string(userBedPath)}', overwrite = TRUE)`);
+        await normalize_interval_table("user_intervals_raw");
+        await execute_sql("DROP TABLE IF EXISTS user_intervals");
+        await execute_sql("ALTER TABLE user_intervals_raw RENAME TO user_intervals");
         return global_data.stage_token === stageToken;
+    };
+
+    const ensure_user_bed_staged = async () => {
+        if (global_data.user_bed_promise) {
+            const staged = await global_data.user_bed_promise;
+            if (!staged && global_data.user_bed_error) {
+                throw global_data.user_bed_error;
+            }
+            if (!staged) {
+                throw new Error("BED staging was invalidated by a newer upload");
+            }
+            return staged;
+        }
+        const stageToken = global_data.stage_token;
+        global_data.user_bed_error = null;
+        update_operation_detail("Staging uploaded BED in browser DuckDB...");
+        set_runtime_status("Staging BED in browser DuckDB...", "warning");
+        global_data.user_bed_promise = stage_user_bed(global_data.bed_rows || [], stageToken)
+            .then((staged) => {
+                if (staged && global_data.stage_token === stageToken) {
+                    global_data.user_bed_staged = true;
+                    global_data.bed_rows = [];
+                    set_runtime_status("webR + Rduckhts backend ready.", "success");
+                }
+                return staged;
+            })
+            .catch((error) => {
+                if (global_data.stage_token === stageToken) {
+                    global_data.user_bed_error = error;
+                    set_runtime_status(`Failed to stage BED in DuckDB: ${error.message ?? String(error)}`, "danger");
+                }
+                console.error(error);
+                return false;
+            });
+        const staged = await global_data.user_bed_promise;
+        if (!staged && global_data.user_bed_error) {
+            throw global_data.user_bed_error;
+        }
+        if (!staged) {
+            throw new Error("BED staging was invalidated by a newer upload");
+        }
+        return staged;
     };
 
     const query_overlap_counts = async (annotationTable, distinctIntervals = false) => {
         const outputPath = "/duckbedqc/query/overlap_counts.tsv";
-        const overlapCountExpr = distinctIntervals ? "COUNT(DISTINCT u.interval_id)" : "COUNT(*)";
-        const normalizedUserChrom = normalize_join_chromosome_expr("u.chrom");
-        const normalizedAnnotationChrom = normalize_join_chromosome_expr("a.chrom");
-        const sql = `
-WITH user_intervals_numbered AS (
-  SELECT row_number() OVER () AS interval_id, * FROM user_intervals
-)
+        const sql = distinctIntervals ? `
 SELECT
   u.chrom AS chrom,
-  ${overlapCountExpr} AS overlap_count
-FROM user_intervals_numbered u
+  COUNT(*) AS overlap_count
+FROM user_intervals u
+WHERE EXISTS (
+  SELECT 1
+  FROM ${annotationTable} a
+  WHERE u.norm_chrom = a.norm_chrom
+    AND u.start < a."end"
+    AND a.start < u."end"
+)
+GROUP BY 1
+ORDER BY 1
+` : `
+SELECT
+  u.chrom AS chrom,
+  COUNT(*) AS overlap_count
+FROM user_intervals u
 INNER JOIN ${annotationTable} a
-  ON (${normalizedUserChrom}) = (${normalizedAnnotationChrom})
+  ON u.norm_chrom = a.norm_chrom
  AND u.start < a."end"
  AND a.start < u."end"
 GROUP BY 1
@@ -993,15 +974,17 @@ utils::write.table(
     };
 
     const duckdb_intersect = async (genome, track, chromosomes) => {
-        if (global_data.user_bed_promise) {
-            await global_data.user_bed_promise;
+        await ensure_user_bed_staged();
+        const cacheKey = `${global_data.stage_token}::${genome}::${track}`;
+        let overlapRows = global_data.overlap_cache[cacheKey];
+        if (!overlapRows) {
+            const annotationTable = await stage_annotation_table(genome, track);
+            update_operation_detail(`Computing ${track.toLowerCase()} overlaps for ${genome}...`);
+            overlapRows = await query_overlap_counts(annotationTable, track.startsWith("Ensembl"));
+            global_data.overlap_cache[cacheKey] = overlapRows;
+        } else {
+            update_operation_detail(`Using cached ${track.toLowerCase()} overlap counts for ${genome}...`);
         }
-        if (global_data.user_bed_error) {
-            throw global_data.user_bed_error;
-        }
-
-        const annotationTable = await stage_annotation_table(genome, track);
-        const overlapRows = await query_overlap_counts(annotationTable, track.startsWith("Ensembl"));
         let chr_count = {};
         overlapRows.forEach((row) => {
             chr_count[row.chrom] = parseInt(row.overlap_count || "0", 10);
@@ -1318,9 +1301,9 @@ utils::write.table(
             if (secondary == "Centromeres") {
                 str = `If your intervals intersect with many centromeres across chromosomes, ${genome} may not be the underlying genome build of ${filename}.`;
             } else if (secondary == "Ensembl gene (exon)") {
-                str = `Intersect the intervals in ${filename} with exon blocks derived from the bundled BED12 gene models in DuckDB.`;
+                str = `Intersect the intervals in ${filename} with precomputed merged exon intervals bundled with DuckBedQC.`;
             } else if (secondary == "Ensembl gene (CDS)") {
-                str = `Intersect the intervals in ${filename} with coding segments clipped from the bundled BED12 gene models in DuckDB.`;
+                str = `Intersect the intervals in ${filename} with precomputed merged CDS intervals bundled with DuckBedQC.`;
             } else {
                 str = `Intersect the intervals in ${filename} with bundled whole-gene annotations using DuckDB in the browser.`;
             }
@@ -1562,30 +1545,12 @@ utils::write.table(
 
                             bed.sort((a, b) => (a[1] > b[1] ? 1 : a[1] < b[1] ? -1 : 0));
                             bed.sort((a, b) => (a[0] > b[0] ? 1 : a[0] < b[0] ? -1 : 0));
+                            global_data.bed_rows = bed;
                             build_input_test();
-                            const stageToken = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-                            global_data.stage_token = stageToken;
-                            global_data.user_bed_error = null;
-                            update_operation_detail("Staging BED in browser DuckDB...");
-                            set_runtime_status("Staging BED in browser DuckDB...", "warning");
-                            global_data.user_bed_promise = stage_user_bed(bed, stageToken)
-                                .then((staged) => {
-                                    if (staged && global_data.stage_token === stageToken) {
-                                        set_runtime_status("webR + Rduckhts backend ready.", "success");
-                                    }
-                                    return staged;
-                                })
-                                .catch((error) => {
-                                    if (global_data.stage_token === stageToken) {
-                                        global_data.user_bed_error = error;
-                                        set_runtime_status(`Failed to stage BED in DuckDB: ${error.message ?? String(error)}`, "danger");
-                                    }
-                                    console.error(error);
-                                    return false;
-                                });
-                            const staged = await global_data.user_bed_promise;
-                            if (!staged && global_data.user_bed_error) {
-                                throw global_data.user_bed_error;
+                            if (duckBackend.ready) {
+                                set_runtime_status("webR + Rduckhts backend ready.", "success");
+                            } else {
+                                set_runtime_status("BED parsed. Browser DuckDB backend will start when you run an overlap analysis.", "muted");
                             }
                             global_data.chromosomes.sort(sort_alphanum);
                             resolve();
@@ -1666,6 +1631,7 @@ utils::write.table(
         global_data = {
             file_obj: file_obj,
             input_test_count: 0,
+            bed_rows: [],
             chr_interval_count: {},
             interval_count_filtered: 0,
             chr_prefix: true,
@@ -1673,9 +1639,11 @@ utils::write.table(
             previous_secondary_action: "Centromeres",
             previous_genome: "hg38",
             chromosomes: [],
-            stage_token: null,
+            stage_token: `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
             user_bed_promise: null,
             user_bed_error: null,
+            user_bed_staged: false,
+            overlap_cache: {},
         };
 
         if (global_data.file_obj) {
@@ -1775,9 +1743,6 @@ utils::write.table(
             $("#local-file-upload").prop("hidden", true)
             $("#remote-file-upload").prop("hidden", false)
         })
-        void warm_duck_backend().catch(() => {
-            // Status text is updated in warm_duck_backend().
-        });
     });
 </script>
 
