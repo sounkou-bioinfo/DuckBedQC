@@ -71,6 +71,29 @@ To avoid one-query-per-interval overhead, the live ClinVar loader groups uncover
 contig windows into batched region queries (up to 1000 windows per batch) and
 appends results incrementally.
 
+## Bundled ClinVar P/LP BCF (preferred mode)
+
+DuckBedQC now bundles prefiltered ClinVar assets and defaults to querying these
+local files in-browser for faster and more stable overlap checks:
+
+- `data/clinvar_hg38_pathogenic_likelypathogenic.bcf`
+- `data/clinvar_hg38_pathogenic_likelypathogenic.bcf.csi`
+- `data/clinvar_hg19_pathogenic_likelypathogenic.bcf`
+- `data/clinvar_hg19_pathogenic_likelypathogenic.bcf.csi`
+
+Filter used at build time:
+
+- `INFO/CLNSIG[*]` equals one of:
+  - `Pathogenic`
+  - `Likely_pathogenic`
+  - `Pathogenic/Likely_pathogenic`
+  - `Likely_pathogenic/Pathogenic`
+
+In the overlap panel, use the ClinVar source selector:
+
+- `ClinVar source: local P/LP BCF` (default)
+- `ClinVar source: live remote VCF`
+
 ## Canonical annotation assets
 
 Canonical assets in `data/GRCh37_*.bed` and `data/GRCh38_*.bed` are generated from

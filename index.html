@@ -417,6 +417,7 @@
         ready: false,
         preferredThreads: 1,
         stagedAnnotations: new Set(),
+        stagedClinvarAssets: new Set(),
         genomeChromosomeLengths: new Map(),
     };
     const build_normalized_interval_table_sql = (sourceTable, targetTable) => `
@@ -613,10 +614,18 @@ ORDER BY norm_chrom, start, "end"
         hg38: {
             vcfUrl: "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/clinvar.vcf.gz",
             indexUrl: "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/clinvar.vcf.gz.tbi",
+            localVcfUrl: "data/clinvar_hg38_pathogenic_likelypathogenic.bcf",
+            localIndexUrl: "data/clinvar_hg38_pathogenic_likelypathogenic.bcf.csi",
+            localVcfPath: "/duckbedqc/data/clinvar_hg38_pathogenic_likelypathogenic.bcf",
+            localIndexPath: "/duckbedqc/data/clinvar_hg38_pathogenic_likelypathogenic.bcf.csi",
         },
         hg19: {
             vcfUrl: "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh37/clinvar.vcf.gz",
             indexUrl: "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh37/clinvar.vcf.gz.tbi",
+            localVcfUrl: "data/clinvar_hg19_pathogenic_likelypathogenic.bcf",
+            localIndexUrl: "data/clinvar_hg19_pathogenic_likelypathogenic.bcf.csi",
+            localVcfPath: "/duckbedqc/data/clinvar_hg19_pathogenic_likelypathogenic.bcf",
+            localIndexPath: "/duckbedqc/data/clinvar_hg19_pathogenic_likelypathogenic.bcf.csi",
         },
     };
 
@@ -839,6 +848,42 @@ utils::write.table(
             delimiter: "\t",
             skipEmptyLines: true,
         }).data;
+    };
+
+    const normalize_clinvar_mode = (mode) => {
+        const value = (mode || "").toLowerCase();
+        return value === "live" ? "live" : "local";
+    };
+
+    const get_clinvar_mode = () => normalize_clinvar_mode(global_data.clinvar_mode || "local");
+
+    const set_clinvar_mode = (mode) => {
+        global_data.clinvar_mode = normalize_clinvar_mode(mode);
+    };
+
+    const ensure_clinvar_local_assets = async (genome) => {
+        const source = clinvarSources[genome];
+        if (!source?.localVcfUrl || !source?.localIndexUrl) {
+            throw new Error(`No bundled ClinVar asset configured for genome ${genome}`);
+        }
+        const cacheKey = `${genome}::local`;
+        if (duckBackend.stagedClinvarAssets.has(cacheKey)) {
+            return;
+        }
+        update_operation_detail(`Loading bundled local ClinVar P/LP asset for ${genome}...`);
+        const [vcfResp, idxResp] = await Promise.all([
+            fetch(source.localVcfUrl, { cache: "no-store" }),
+            fetch(source.localIndexUrl, { cache: "no-store" }),
+        ]);
+        if (!vcfResp.ok) {
+            throw new Error(`Failed to fetch local ClinVar BCF: ${source.localVcfUrl}`);
+        }
+        if (!idxResp.ok) {
+            throw new Error(`Failed to fetch local ClinVar index: ${source.localIndexUrl}`);
+        }
+        await duckBackend.webR.FS.writeFile(source.localVcfPath, new Uint8Array(await vcfResp.arrayBuffer()));
+        await duckBackend.webR.FS.writeFile(source.localIndexPath, new Uint8Array(await idxResp.arrayBuffer()));
+        duckBackend.stagedClinvarAssets.add(cacheKey);
     };
 
     const copy_query_to_file = async (sql, outputPath) => {
@@ -1165,7 +1210,7 @@ ORDER BY a.chrom, a.start, a."end"
         return out;
     };
 
-    const build_live_clinvar_region_select_sql = (source, region) => `
+    const build_live_clinvar_region_select_sql = (source, region, useLocalAsset) => `
 SELECT
   CHROM AS chrom,
   POS AS pos,
@@ -1196,17 +1241,21 @@ FROM (
     coalesce(CAST(INFO_CLNDN AS VARCHAR), '') AS condition_text,
     coalesce(CAST(INFO_GENEINFO AS VARCHAR), '') AS gene_info_text
   FROM read_bcf(
-    '${escape_r_string(source.vcfUrl)}',
+    '${escape_r_string(useLocalAsset ? source.localVcfPath : source.vcfUrl)}',
     region := '${escape_r_string(region)}',
-    index_path := '${escape_r_string(source.indexUrl)}'
+    index_path := '${escape_r_string(useLocalAsset ? source.localIndexPath : source.indexUrl)}'
   )
 )
 `;
 
-    const load_live_clinvar_regions = async ({ genome, regions, tableName }) => {
+    const load_live_clinvar_regions = async ({ genome, regions, tableName, mode }) => {
         const source = clinvarSources[genome];
         if (!source) {
             throw new Error(`No ClinVar source configured for genome ${genome}`);
+        }
+        const useLocalAsset = mode === "local";
+        if (useLocalAsset) {
+            await ensure_clinvar_local_assets(genome);
         }
         await execute_sql(`
 CREATE OR REPLACE TABLE ${tableName} AS
@@ -1233,8 +1282,9 @@ WHERE FALSE
         const batches = chunk_array(regions, batchSize);
         for (let i = 0; i < batches.length; i += 1) {
             const batch = batches[i];
-            update_operation_detail(`Querying live ClinVar batch ${i + 1}/${batches.length} (${batch.length} windows)...`);
-            const batchSql = batch.map((region) => build_live_clinvar_region_select_sql(source, region)).join("\nUNION ALL\n");
+            const sourceLabel = useLocalAsset ? "local ClinVar" : "live ClinVar";
+            update_operation_detail(`Querying ${sourceLabel} batch ${i + 1}/${batches.length} (${batch.length} windows)...`);
+            const batchSql = batch.map((region) => build_live_clinvar_region_select_sql(source, region, useLocalAsset)).join("\nUNION ALL\n");
             await execute_sql(`INSERT INTO ${tableName} ${batchSql}`);
         }
     };
@@ -1248,7 +1298,7 @@ WHERE FALSE
         likely_pathogenic_rows: Number(row?.likely_pathogenic_rows || 0),
     });
 
-    const query_uncovered_clinvar = async ({ genome, track, annotationTable, exportPrefix, includeAnnotationName }) => {
+    const query_uncovered_clinvar = async ({ genome, track, annotationTable, exportPrefix, includeAnnotationName, mode }) => {
         const clinvarTable = `clinvar_${genome}_${global_data.stage_token.replace(/[^a-zA-Z0-9]+/g, "_")}`;
         const uncoveredSql = build_uncovered_annotation_sql(annotationTable);
         const uncoveredWithClinvarPath = `/duckbedqc/query/${exportPrefix}_uncovered_with_clinvar.tsv`;
@@ -1288,8 +1338,10 @@ ORDER BY 1
             })
             .filter(Boolean);
 
-        update_operation_detail(`Querying live ClinVar indexed regions (${regions.length} contig windows)...`);
-        await load_live_clinvar_regions({ genome, regions, tableName: clinvarTable });
+        const normalizedMode = normalize_clinvar_mode(mode);
+        const sourceLabel = normalizedMode === "local" ? "local ClinVar P/LP" : "live ClinVar";
+        update_operation_detail(`Querying ${sourceLabel} indexed regions (${regions.length} contig windows)...`);
+        await load_live_clinvar_regions({ genome, regions, tableName: clinvarTable, mode: normalizedMode });
 
         const annotationNameExpr = includeAnnotationName ? "u.name" : "''";
         const summaryAnnotationNameExpr = includeAnnotationName ? "coalesce(u.name, '')" : "''";
@@ -1864,7 +1916,11 @@ FROM hits
                             <button type="button" class="btn btn-outline-secondary btn-sm" id="hypothesis-${idx}-download-report-pdf">Export report PDF</button>
                             <button type="button" class="btn btn-outline-secondary btn-sm" id="hypothesis-${idx}-download-overlapping">Download overlapping annotation BED</button>
                             <button type="button" class="btn btn-outline-secondary btn-sm" id="hypothesis-${idx}-download-uncovered">Download uncovered annotation BED</button>
-                            <button type="button" class="btn btn-outline-danger btn-sm" id="hypothesis-${idx}-run-live-clinvar">Analyze uncovered with live ClinVar</button>
+                            <select class="form-select form-select-sm w-auto" id="hypothesis-${idx}-clinvar-mode" title="ClinVar query source">
+                                <option value="local" selected>ClinVar source: local P/LP BCF</option>
+                                <option value="live">ClinVar source: live remote VCF</option>
+                            </select>
+                            <button type="button" class="btn btn-outline-danger btn-sm" id="hypothesis-${idx}-run-live-clinvar">Analyze uncovered with ClinVar</button>
                             <button type="button" class="btn btn-outline-danger btn-sm" id="hypothesis-${idx}-download-live-clinvar" disabled>Download uncovered + ClinVar TSV</button>
                             <button type="button" class="btn btn-outline-danger btn-sm" id="hypothesis-${idx}-download-live-clinvar-summary" disabled>Download ClinVar summary TSV</button>
                         </div>
@@ -1901,14 +1957,23 @@ FROM hits
         });
 
         const runClinvarButton = document.getElementById(`hypothesis-${idx}-run-live-clinvar`);
+        const clinvarModeSelect = document.getElementById(`hypothesis-${idx}-clinvar-mode`);
         const dlClinvarButton = document.getElementById(`hypothesis-${idx}-download-live-clinvar`);
         const dlClinvarSummaryButton = document.getElementById(`hypothesis-${idx}-download-live-clinvar-summary`);
         const clinvarSummaryNode = document.getElementById(`hypothesis-${idx}-clinvar-summary`);
         let clinvarResult = null;
 
+        clinvarModeSelect.value = get_clinvar_mode();
+        clinvarModeSelect.addEventListener("change", () => {
+            set_clinvar_mode(clinvarModeSelect.value);
+        });
+
         runClinvarButton.addEventListener("click", async () => {
             runClinvarButton.disabled = true;
-            runClinvarButton.textContent = "Running live ClinVar...";
+            const mode = get_clinvar_mode();
+            const modeLabel = mode === "local" ? "local ClinVar" : "live ClinVar";
+            runClinvarButton.textContent = `Running ${modeLabel}...`;
+            clinvarModeSelect.disabled = true;
             try {
                 const exportPrefix = `${global_data.stage_token.replace(/[^a-zA-Z0-9]+/g, "_")}_${genome}_${sanitize_track_slug(track)}`;
                 clinvarResult = await query_uncovered_clinvar({
@@ -1917,17 +1982,19 @@ FROM hits
                     annotationTable,
                     exportPrefix,
                     includeAnnotationName: track !== "Centromeres",
+                    mode,
                 });
                 clinvarSummaryNode.innerHTML = build_clinvar_summary_cards_html(clinvarResult.summary);
                 dlClinvarButton.disabled = false;
                 dlClinvarSummaryButton.disabled = false;
-                runClinvarButton.textContent = "Re-run live ClinVar";
+                runClinvarButton.textContent = `Re-run ${modeLabel}`;
             } catch (error) {
                 console.error(error);
-                clinvarSummaryNode.innerHTML = `<div class="alert alert-warning">Live ClinVar query failed: <code>${escape_html(error.message ?? String(error))}</code></div>`;
-                runClinvarButton.textContent = "Retry live ClinVar";
+                clinvarSummaryNode.innerHTML = `<div class="alert alert-warning">ClinVar query failed: <code>${escape_html(error.message ?? String(error))}</code></div>`;
+                runClinvarButton.textContent = `Retry ${modeLabel}`;
             } finally {
                 runClinvarButton.disabled = false;
+                clinvarModeSelect.disabled = false;
             }
         });
 
@@ -2632,6 +2699,7 @@ FROM hits
             user_bed_staged: false,
             overlap_cache: {},
             interval_stats_rows: [],
+            clinvar_mode: "local",
         };
 
         if (global_data.file_obj) {
