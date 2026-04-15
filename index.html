@@ -478,19 +478,19 @@ ORDER BY norm_chrom, start, "end"
                 url: "data/GRCh38_centromeres.bed",
                 vfsPath: "/duckbedqc/data/GRCh38_centromeres.bed",
             },
-            "Ensembl gene (whole)": {
+            "Canonical gene (whole)": {
                 kind: "bed",
                 tableName: "annotation_hg38_genes",
                 url: "data/GRCh38_gene_loci.bed",
                 vfsPath: "/duckbedqc/data/GRCh38_gene_loci.bed",
             },
-            "Ensembl gene (exon)": {
+            "Canonical gene (exon)": {
                 kind: "bed",
                 tableName: "annotation_hg38_genes_exons",
                 url: "data/GRCh38_exons.bed",
                 vfsPath: "/duckbedqc/data/GRCh38_exons.bed",
             },
-            "Ensembl gene (CDS)": {
+            "Canonical gene (CDS)": {
                 kind: "bed",
                 tableName: "annotation_hg38_genes_cds",
                 url: "data/GRCh38_cds.bed",
@@ -504,19 +504,19 @@ ORDER BY norm_chrom, start, "end"
                 url: "data/GRCh37_centromeres.bed",
                 vfsPath: "/duckbedqc/data/GRCh37_centromeres.bed",
             },
-            "Ensembl gene (whole)": {
+            "Canonical gene (whole)": {
                 kind: "bed",
                 tableName: "annotation_hg19_genes",
                 url: "data/GRCh37_gene_loci.bed",
                 vfsPath: "/duckbedqc/data/GRCh37_gene_loci.bed",
             },
-            "Ensembl gene (exon)": {
+            "Canonical gene (exon)": {
                 kind: "bed",
                 tableName: "annotation_hg19_genes_exons",
                 url: "data/GRCh37_exons.bed",
                 vfsPath: "/duckbedqc/data/GRCh37_exons.bed",
             },
-            "Ensembl gene (CDS)": {
+            "Canonical gene (CDS)": {
                 kind: "bed",
                 tableName: "annotation_hg19_genes_cds",
                 url: "data/GRCh37_cds.bed",
@@ -971,9 +971,7 @@ ORDER BY chrom
 
     const build_overlapping_annotation_sql = (annotationTable) => `
 SELECT
-  a.chrom,
-  a.start,
-  a."end"
+  a.* EXCLUDE (norm_chrom)
 FROM ${annotationTable} a
 ASOF LEFT JOIN user_intervals_merged u
   ON a.norm_chrom = u.norm_chrom
@@ -984,9 +982,7 @@ ORDER BY a.chrom, a.start, a."end"
 
     const build_uncovered_annotation_sql = (annotationTable) => `
 SELECT
-  a.chrom,
-  a.start,
-  a."end"
+  a.* EXCLUDE (norm_chrom)
 FROM ${annotationTable} a
 ASOF LEFT JOIN user_intervals_merged u
   ON a.norm_chrom = u.norm_chrom
@@ -1385,9 +1381,9 @@ ORDER BY a.chrom, a.start, a."end"
                             <div class="form-floating">
                                 <select class="form-select hyp-test" id="hypothesis-secondary-${idx}">
                                     <option selected>Centromeres</option>
-                                    <option>Ensembl gene (whole)</option>
-                                    <option>Ensembl gene (exon)</option>
-                                    <option>Ensembl gene (CDS)</option>
+                                    <option>Canonical gene (whole)</option>
+                                    <option>Canonical gene (exon)</option>
+                                    <option>Canonical gene (CDS)</option>
                                 </select>
                                 <label for="hypothesis-secondary-${idx}">Annotation</label>
                             </div>
@@ -1596,9 +1592,9 @@ ORDER BY a.chrom, a.start, a."end"
             $(`#hypothesis-secondary-wrapper-${idx}`).prop("hidden", false);
             if (secondary == "Centromeres") {
                 str = `Measure how much of the bundled centromere annotation is hit or base-covered by ${filename}.`;
-            } else if (secondary == "Ensembl gene (exon)") {
+            } else if (secondary == "Canonical gene (exon)") {
                 str = `Measure exon hit rate, exon base coverage, and export covered or uncovered exon loci for ${filename}.`;
-            } else if (secondary == "Ensembl gene (CDS)") {
+            } else if (secondary == "Canonical gene (CDS)") {
                 str = `Measure CDS hit rate, CDS base coverage, and export covered or uncovered CDS loci for ${filename}.`;
             } else {
                 str = `Measure whole-gene locus hit rate and base coverage for ${filename} against the bundled ${genome} annotation.`;
