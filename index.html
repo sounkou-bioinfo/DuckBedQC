@@ -1229,7 +1229,7 @@ WHERE FALSE
             return;
         }
 
-        const batchSize = 24;
+        const batchSize = 1000;
         const batches = chunk_array(regions, batchSize);
         for (let i = 0; i < batches.length; i += 1) {
             const batch = batches[i];

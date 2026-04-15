@@ -68,7 +68,8 @@ live query path normalizes key ClinVar fields to `VARCHAR` text before
 pathogenicity matching to keep browser DuckDB binding stable.
 
 To avoid one-query-per-interval overhead, the live ClinVar loader groups uncovered
-contig windows into batched region queries and appends results incrementally.
+contig windows into batched region queries (up to 1000 windows per batch) and
+appends results incrementally.
 
 ## Canonical annotation assets
 
