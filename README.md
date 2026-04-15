@@ -166,4 +166,4 @@ Repository links:
 
 - DuckBedQC fork: <https://github.com/sounkou-bioinfo/DuckBedQC>
 - Original quinlab bedqc: <https://github.com/quinlan-lab/bedqc>
-- Original quinlab bedqc-app: <https://github.com/quinlan-lab/bedqc-app>
+- Original quinlab app site: <https://quinlan-lab.github.io/bedqc/>
