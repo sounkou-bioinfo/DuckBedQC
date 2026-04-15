@@ -537,6 +537,17 @@ ORDER BY norm_chrom, start, "end"
         },
     };
 
+    const clinvarSources = {
+        hg38: {
+            vcfUrl: "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/clinvar.vcf.gz",
+            indexUrl: "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/clinvar.vcf.gz.tbi",
+        },
+        hg19: {
+            vcfUrl: "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh37/clinvar.vcf.gz",
+            indexUrl: "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh37/clinvar.vcf.gz.tbi",
+        },
+    };
+
     const set_runtime_status = (message, kind = "muted") => {
         runtimeStatusNode.className = `col-lg-8 mx-auto small pt-2 text-${kind}`;
         runtimeStatusNode.textContent = message;
@@ -760,6 +771,10 @@ utils::write.table(
 
     const copy_query_to_file = async (sql, outputPath) => {
         await execute_sql(`COPY (${sql}) TO '${outputPath}' WITH (FORMAT CSV, DELIMITER '\t', HEADER FALSE)`);
+    };
+
+    const copy_query_with_header_to_file = async (sql, outputPath) => {
+        await execute_sql(`COPY (${sql}) TO '${outputPath}' WITH (FORMAT CSV, DELIMITER '\t', HEADER TRUE)`);
     };
 
     const download_webr_file = async (path, filename, mimeType = "text/plain;charset=utf-8") => {
@@ -1056,6 +1071,221 @@ ORDER BY a.chrom, a.start, a."end"
             overlappingPath,
             uncoveredPath,
         };
+    };
+
+    const drop_clinvar_table = async (tableName) => {
+        await execute_sql(`DROP TABLE IF EXISTS ${tableName}`);
+    };
+
+    const to_clinvar_region_chrom = (chrom) => {
+        const stripped = strip_prefix(chrom || "").trim();
+        if (stripped === "M") {
+            return "MT";
+        }
+        return stripped;
+    };
+
+    const load_live_clinvar_regions = async ({ genome, regions, tableName }) => {
+        const source = clinvarSources[genome];
+        if (!source) {
+            throw new Error(`No ClinVar source configured for genome ${genome}`);
+        }
+        if (!regions.length) {
+            await execute_sql(`
+CREATE OR REPLACE TABLE ${tableName} AS
+SELECT
+  CAST(NULL AS VARCHAR) AS chrom,
+  CAST(NULL AS BIGINT) AS pos,
+  CAST(NULL AS BIGINT) AS end_pos,
+  CAST(NULL AS VARCHAR) AS clinvar_id,
+  CAST(NULL AS VARCHAR) AS ref,
+  CAST(NULL AS VARCHAR) AS alt,
+  CAST(NULL AS VARCHAR) AS clnsig,
+  CAST(NULL AS VARCHAR) AS review_status,
+  CAST(NULL AS VARCHAR) AS condition,
+  CAST(NULL AS VARCHAR) AS gene_info,
+  CAST(0 AS INTEGER) AS is_pathogenic_like,
+  CAST(0 AS INTEGER) AS is_likely_pathogenic
+WHERE FALSE
+`);
+            return;
+        }
+
+        const unionSql = regions.map((region) => `
+SELECT
+  CHROM AS chrom,
+  POS AS pos,
+  POS + length(REF) AS end_pos,
+  ID AS clinvar_id,
+  REF AS ref,
+  ALT AS alt,
+  coalesce(INFO_CLNSIG, '') AS clnsig,
+  coalesce(INFO_CLNREVSTAT, '') AS review_status,
+  coalesce(INFO_CLNDN, '') AS condition,
+  coalesce(INFO_GENEINFO, '') AS gene_info,
+  CASE
+    WHEN upper(coalesce(INFO_CLNSIG, '')) LIKE '%PATHOGENIC%'
+     AND upper(coalesce(INFO_CLNSIG, '')) NOT LIKE '%LIKELY_PATHOGENIC%'
+    THEN 1
+    ELSE 0
+  END AS is_pathogenic_like,
+  CASE WHEN upper(coalesce(INFO_CLNSIG, '')) LIKE '%LIKELY_PATHOGENIC%' THEN 1 ELSE 0 END AS is_likely_pathogenic
+FROM read_bcf(
+  '${escape_r_string(source.vcfUrl)}',
+  region := '${escape_r_string(region)}',
+  index_path := '${escape_r_string(source.indexUrl)}'
+)`).join("\nUNION ALL\n");
+
+        await execute_sql(`CREATE OR REPLACE TABLE ${tableName} AS ${unionSql}`);
+    };
+
+    const normalize_clinvar_summary_row = (row, genome, track) => ({
+        genome: row?.genome || genome,
+        annotation_track: row?.annotation_track || track,
+        clinvar_overlap_rows: Number(row?.clinvar_overlap_rows || 0),
+        uncovered_intervals_with_clinvar: Number(row?.uncovered_intervals_with_clinvar || 0),
+        pathogenic_like_rows: Number(row?.pathogenic_like_rows || 0),
+        likely_pathogenic_rows: Number(row?.likely_pathogenic_rows || 0),
+    });
+
+    const query_uncovered_clinvar = async ({ genome, track, annotationTable, exportPrefix, includeAnnotationName }) => {
+        const clinvarTable = `clinvar_${genome}_${global_data.stage_token.replace(/[^a-zA-Z0-9]+/g, "_")}`;
+        const uncoveredSql = build_uncovered_annotation_sql(annotationTable);
+        const uncoveredWithClinvarPath = `/duckbedqc/query/${exportPrefix}_uncovered_with_clinvar.tsv`;
+        const summaryPath = `/duckbedqc/query/${exportPrefix}_clinvar_summary.tsv`;
+
+        const boundsSql = `
+WITH uncovered AS (
+  ${uncoveredSql}
+),
+uncovered_norm AS (
+  SELECT
+    chrom,
+    start,
+    "end",
+    ${normalize_join_chromosome_expr("chrom")} AS norm_chrom
+  FROM uncovered
+)
+SELECT
+  norm_chrom,
+  min(start) AS min_start,
+  max("end") AS max_end
+FROM uncovered_norm
+GROUP BY 1
+ORDER BY 1
+`;
+        const boundsPath = `/duckbedqc/query/${exportPrefix}_uncovered_bounds.tsv`;
+        const boundsRows = await query_tsv(boundsSql, boundsPath);
+        const regions = boundsRows
+            .map((row) => {
+                const chrom = to_clinvar_region_chrom(row.norm_chrom || "");
+                const minStart = Number(row.min_start || 0);
+                const maxEnd = Number(row.max_end || 0);
+                if (!chrom || !Number.isFinite(minStart) || !Number.isFinite(maxEnd) || maxEnd <= minStart) {
+                    return null;
+                }
+                return `${chrom}:${Math.max(1, minStart + 1)}-${Math.max(1, maxEnd)}`;
+            })
+            .filter(Boolean);
+
+        update_operation_detail(`Querying live ClinVar indexed regions (${regions.length} contig windows)...`);
+        await load_live_clinvar_regions({ genome, regions, tableName: clinvarTable });
+
+        const annotationNameExpr = includeAnnotationName ? "u.name" : "''";
+        const summaryAnnotationNameExpr = includeAnnotationName ? "coalesce(u.name, '')" : "''";
+
+        const uncoveredWithClinvarSql = `
+WITH uncovered AS (
+  ${uncoveredSql}
+),
+clinvar_norm AS (
+  SELECT
+    c.*,
+    ${normalize_join_chromosome_expr("c.chrom")} AS norm_chrom
+  FROM ${clinvarTable} c
+),
+uncovered_norm AS (
+  SELECT
+    u.*,
+    ${normalize_join_chromosome_expr("u.chrom")} AS norm_chrom
+  FROM uncovered u
+)
+SELECT
+  u.chrom,
+  u.start,
+  u."end",
+  ${annotationNameExpr} AS annotation_name,
+  c.clinvar_id,
+  c.ref,
+  c.alt,
+  c.clnsig,
+  c.review_status,
+  c.condition,
+  c.gene_info
+FROM uncovered_norm u
+INNER JOIN clinvar_norm c
+  ON u.norm_chrom = c.norm_chrom
+ AND u.start < c.end_pos
+ AND c.pos - 1 < u."end"
+ORDER BY u.chrom, u.start, u."end", c.pos
+`;
+
+        const summarySql = `
+WITH uncovered AS (
+  ${uncoveredSql}
+),
+clinvar_norm AS (
+  SELECT
+    c.*,
+    ${normalize_join_chromosome_expr("c.chrom")} AS norm_chrom
+  FROM ${clinvarTable} c
+),
+uncovered_norm AS (
+  SELECT
+    u.*,
+    ${normalize_join_chromosome_expr("u.chrom")} AS norm_chrom
+  FROM uncovered u
+),
+hits AS (
+  SELECT
+    u.chrom,
+    u.start,
+    u."end",
+    ${summaryAnnotationNameExpr} AS annotation_name,
+    c.clinvar_id,
+    c.clnsig,
+    c.review_status,
+    c.condition,
+    c.gene_info,
+    c.is_pathogenic_like,
+    c.is_likely_pathogenic
+  FROM uncovered_norm u
+  INNER JOIN clinvar_norm c
+    ON u.norm_chrom = c.norm_chrom
+   AND u.start < c.end_pos
+   AND c.pos - 1 < u."end"
+)
+SELECT
+  '${genome}' AS genome,
+  '${track}' AS annotation_track,
+  count(*)::BIGINT AS clinvar_overlap_rows,
+  count(DISTINCT (chrom || ':' || start::VARCHAR || '-' || "end"::VARCHAR || ':' || annotation_name))::BIGINT AS uncovered_intervals_with_clinvar,
+  sum(CASE WHEN is_pathogenic_like = 1 THEN 1 ELSE 0 END)::BIGINT AS pathogenic_like_rows,
+  sum(CASE WHEN is_likely_pathogenic = 1 THEN 1 ELSE 0 END)::BIGINT AS likely_pathogenic_rows
+FROM hits
+`;
+
+        try {
+            await copy_query_with_header_to_file(uncoveredWithClinvarSql, uncoveredWithClinvarPath);
+            const summaryRows = await query_tsv(summarySql, summaryPath);
+            return {
+                summary: normalize_clinvar_summary_row(summaryRows[0], genome, track),
+                detailsPath: uncoveredWithClinvarPath,
+                summaryPath,
+            };
+        } finally {
+            await drop_clinvar_table(clinvarTable);
+        }
     };
 
     const build_report_html_document = ({
@@ -1405,6 +1635,38 @@ ORDER BY a.chrom, a.start, a."end"
         </div>
     `;
 
+    const build_clinvar_summary_cards_html = (summary) => `
+        <div class="row g-3 pt-2 pb-3" id="clinvar-summary-cards">
+            <div class="col-md-4">
+                <div class="card h-100 border-danger">
+                    <div class="card-body">
+                        <div class="text-muted small">Pathogenic-like ClinVar rows</div>
+                        <div class="fs-5">${format_integer(summary.pathogenic_like_rows + summary.likely_pathogenic_rows)}</div>
+                        <div class="small text-muted">Pathogenic + likely pathogenic</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <div class="text-muted small">Uncovered intervals with ClinVar overlap</div>
+                        <div class="fs-5">${format_integer(summary.uncovered_intervals_with_clinvar)}</div>
+                        <div class="small text-muted">Potential medically relevant gaps</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <div class="text-muted small">Total ClinVar overlap rows</div>
+                        <div class="fs-5">${format_integer(summary.clinvar_overlap_rows)}</div>
+                        <div class="small text-muted">Across all uncovered intervals</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
     const duckdb_intersect = async (genome, track, chromosomes) => {
         if (global_data.user_bed_promise && !global_data.user_bed_staged) {
             update_operation_detail("Waiting for browser DuckDB backend preparation...");
@@ -1412,14 +1674,16 @@ ORDER BY a.chrom, a.start, a."end"
         await ensure_user_bed_staged();
         const cacheKey = `${global_data.stage_token}::${genome}::${track}`;
         let coverage = global_data.overlap_cache[cacheKey];
+        let annotationTable;
         if (!coverage) {
-            const annotationTable = await stage_annotation_table(genome, track);
+            annotationTable = await stage_annotation_table(genome, track);
             update_operation_detail(`Computing ${track.toLowerCase()} annotation coverage for ${genome}...`);
             const exportPrefix = `${global_data.stage_token.replace(/[^a-zA-Z0-9]+/g, "_")}_${genome}_${sanitize_track_slug(track)}`;
             coverage = await query_annotation_coverage(annotationTable, exportPrefix);
             global_data.overlap_cache[cacheKey] = coverage;
         } else {
             update_operation_detail(`Using cached ${track.toLowerCase()} annotation coverage for ${genome}...`);
+            annotationTable = await stage_annotation_table(genome, track);
         }
         const perChromRows = coverage.summaryRows.slice().sort((a, b) => sort_alphanum(a.chrom, b.chrom));
         const perChromMap = Object.fromEntries(perChromRows.map((row) => [row.chrom, row]));
@@ -1451,8 +1715,12 @@ ORDER BY a.chrom, a.start, a."end"
                             <button type="button" class="btn btn-outline-secondary btn-sm" id="hypothesis-${idx}-download-report-pdf">Export report PDF</button>
                             <button type="button" class="btn btn-outline-secondary btn-sm" id="hypothesis-${idx}-download-overlapping">Download overlapping annotation BED</button>
                             <button type="button" class="btn btn-outline-secondary btn-sm" id="hypothesis-${idx}-download-uncovered">Download uncovered annotation BED</button>
+                            <button type="button" class="btn btn-outline-danger btn-sm" id="hypothesis-${idx}-run-live-clinvar">Analyze uncovered with live ClinVar</button>
+                            <button type="button" class="btn btn-outline-danger btn-sm" id="hypothesis-${idx}-download-live-clinvar" disabled>Download uncovered + ClinVar TSV</button>
+                            <button type="button" class="btn btn-outline-danger btn-sm" id="hypothesis-${idx}-download-live-clinvar-summary" disabled>Download ClinVar summary TSV</button>
                         </div>
                     </div>
+                    <div id="hypothesis-${idx}-clinvar-summary"></div>
                     <div class="row pt-1">
                         <div class="col-lg-6 col-12 pb-3">
                             <div id="hypothesis-${idx}-interval-plot"></div>
@@ -1481,6 +1749,51 @@ ORDER BY a.chrom, a.start, a."end"
         });
         document.getElementById(`hypothesis-${idx}-download-uncovered`).addEventListener("click", () => {
             void download_webr_file(coverage.uncoveredPath, `${genome}_${sanitize_track_slug(track)}_uncovered.bed`);
+        });
+
+        const runClinvarButton = document.getElementById(`hypothesis-${idx}-run-live-clinvar`);
+        const dlClinvarButton = document.getElementById(`hypothesis-${idx}-download-live-clinvar`);
+        const dlClinvarSummaryButton = document.getElementById(`hypothesis-${idx}-download-live-clinvar-summary`);
+        const clinvarSummaryNode = document.getElementById(`hypothesis-${idx}-clinvar-summary`);
+        let clinvarResult = null;
+
+        runClinvarButton.addEventListener("click", async () => {
+            runClinvarButton.disabled = true;
+            runClinvarButton.textContent = "Running live ClinVar...";
+            try {
+                const exportPrefix = `${global_data.stage_token.replace(/[^a-zA-Z0-9]+/g, "_")}_${genome}_${sanitize_track_slug(track)}`;
+                clinvarResult = await query_uncovered_clinvar({
+                    genome,
+                    track,
+                    annotationTable,
+                    exportPrefix,
+                    includeAnnotationName: track !== "Centromeres",
+                });
+                clinvarSummaryNode.innerHTML = build_clinvar_summary_cards_html(clinvarResult.summary);
+                dlClinvarButton.disabled = false;
+                dlClinvarSummaryButton.disabled = false;
+                runClinvarButton.textContent = "Re-run live ClinVar";
+            } catch (error) {
+                console.error(error);
+                clinvarSummaryNode.innerHTML = `<div class="alert alert-warning">Live ClinVar query failed: <code>${escape_html(error.message ?? String(error))}</code></div>`;
+                runClinvarButton.textContent = "Retry live ClinVar";
+            } finally {
+                runClinvarButton.disabled = false;
+            }
+        });
+
+        dlClinvarButton.addEventListener("click", () => {
+            if (!clinvarResult) {
+                return;
+            }
+            void download_webr_file(clinvarResult.detailsPath, `${genome}_${sanitize_track_slug(track)}_uncovered_with_clinvar.tsv`, "text/tab-separated-values;charset=utf-8");
+        });
+
+        dlClinvarSummaryButton.addEventListener("click", () => {
+            if (!clinvarResult) {
+                return;
+            }
+            void download_webr_file(clinvarResult.summaryPath, `${genome}_${sanitize_track_slug(track)}_clinvar_summary.tsv`, "text/tab-separated-values;charset=utf-8");
         });
 
         build_bar_plot(

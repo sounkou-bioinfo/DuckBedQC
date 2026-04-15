@@ -48,6 +48,21 @@ For annotation overlap analyses, DuckBedQC can export:
 The report includes genome build, annotation track, interval/base coverage summary,
 and per-chromosome coverage table.
 
+## Live ClinVar for uncovered intervals
+
+For overlap analyses, DuckBedQC can query live indexed ClinVar VCF over HTTPS to
+prioritize uncovered intervals with potential medical relevance.
+
+- Genome-specific sources:
+  - hg38: `https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/clinvar.vcf.gz`
+  - hg19: `https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh37/clinvar.vcf.gz`
+- Click `Analyze uncovered with live ClinVar` in the overlap results panel.
+- Download outputs:
+  - `*_uncovered_with_clinvar.tsv`
+  - `*_clinvar_summary.tsv`
+
+Live mode depends on runtime HTTPS access and indexed range retrieval in the browser.
+
 ## Canonical annotation assets
 
 Canonical assets in `data/GRCh37_*.bed` and `data/GRCh38_*.bed` are generated from
