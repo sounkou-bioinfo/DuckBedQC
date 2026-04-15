@@ -26,6 +26,7 @@ annotation BED rows for kit-style review.
 
 - Centromeres: `chrom`, `start`, `end`
 - Canonical whole-gene: `chrom`, `start`, `end`, `name`
+- Canonical exon (protein-coding): `chrom`, `start`, `end`, `name`
 - Canonical exon: `chrom`, `start`, `end`, `name`
 - Canonical CDS: `chrom`, `start`, `end`, `name`
 
@@ -44,6 +45,7 @@ UCSC tables:
 
 - `knownCanonical` for canonical transcript membership
 - `knownGene` for transcript/exon/CDS intervals
+- `knownAttrs` for transcript type (`protein_coding` filtering)
 - `kgXref` for gene symbols
 
 Regenerate with:

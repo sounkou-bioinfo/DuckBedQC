@@ -9,9 +9,11 @@ Sources (UCSC public tables):
 Outputs (BED4):
   - GRCh37_gene_loci.bed
   - GRCh37_exons.bed
+  - GRCh37_exons_protein_coding.bed
   - GRCh37_cds.bed
   - GRCh38_gene_loci.bed
   - GRCh38_exons.bed
+  - GRCh38_exons_protein_coding.bed
   - GRCh38_cds.bed
 """
 
@@ -65,10 +67,18 @@ def build_for_db(build_label: str, db: str, out_dir: Path) -> None:
         row[0]: row[4] for row in kgxref_rows if len(row) >= 5 and row[4]
     }
 
+    known_attrs_rows = load_table(db, "knownAttrs")
+    protein_coding_transcripts = {
+        row[0]
+        for row in known_attrs_rows
+        if len(row) >= 4 and row[3] == "protein_coding"
+    }
+
     known_gene_rows = load_table(db, "knownGene")
 
     gene_rows: list[tuple[str, int, int, str]] = []
     exon_rows: list[tuple[str, int, int, str]] = []
+    exon_rows_protein_coding: list[tuple[str, int, int, str]] = []
     cds_rows: list[tuple[str, int, int, str]] = []
 
     for row in known_gene_rows:
@@ -96,9 +106,12 @@ def build_for_db(build_label: str, db: str, out_dir: Path) -> None:
         for exon_index, (exon_start, exon_end) in enumerate(
             zip(exon_starts, exon_ends), start=1
         ):
-            exon_rows.append(
-                (chrom, exon_start, exon_end, f"{base_name}|exon{exon_index}")
-            )
+            exon_name = f"{base_name}|exon{exon_index}"
+            exon_rows.append((chrom, exon_start, exon_end, exon_name))
+            if tx_id in protein_coding_transcripts:
+                exon_rows_protein_coding.append(
+                    (chrom, exon_start, exon_end, exon_name)
+                )
 
             overlap_start = max(exon_start, cds_start)
             overlap_end = min(exon_end, cds_end)
@@ -110,11 +123,16 @@ def build_for_db(build_label: str, db: str, out_dir: Path) -> None:
 
     write_bed(out_dir / f"{build_label}_gene_loci.bed", gene_rows)
     write_bed(out_dir / f"{build_label}_exons.bed", exon_rows)
+    write_bed(
+        out_dir / f"{build_label}_exons_protein_coding.bed",
+        exon_rows_protein_coding,
+    )
     write_bed(out_dir / f"{build_label}_cds.bed", cds_rows)
 
     print(
         f"{build_label}: "
-        f"{len(gene_rows)} loci, {len(exon_rows)} exons, {len(cds_rows)} CDS segments"
+        f"{len(gene_rows)} loci, {len(exon_rows)} exons "
+        f"({len(exon_rows_protein_coding)} protein-coding), {len(cds_rows)} CDS segments"
     )
 
 

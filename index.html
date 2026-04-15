@@ -490,6 +490,12 @@ ORDER BY norm_chrom, start, "end"
                 url: "data/GRCh38_exons.bed",
                 vfsPath: "/duckbedqc/data/GRCh38_exons.bed",
             },
+            "Canonical gene (exon, protein-coding)": {
+                kind: "bed",
+                tableName: "annotation_hg38_genes_exons_protein_coding",
+                url: "data/GRCh38_exons_protein_coding.bed",
+                vfsPath: "/duckbedqc/data/GRCh38_exons_protein_coding.bed",
+            },
             "Canonical gene (CDS)": {
                 kind: "bed",
                 tableName: "annotation_hg38_genes_cds",
@@ -515,6 +521,12 @@ ORDER BY norm_chrom, start, "end"
                 tableName: "annotation_hg19_genes_exons",
                 url: "data/GRCh37_exons.bed",
                 vfsPath: "/duckbedqc/data/GRCh37_exons.bed",
+            },
+            "Canonical gene (exon, protein-coding)": {
+                kind: "bed",
+                tableName: "annotation_hg19_genes_exons_protein_coding",
+                url: "data/GRCh37_exons_protein_coding.bed",
+                vfsPath: "/duckbedqc/data/GRCh37_exons_protein_coding.bed",
             },
             "Canonical gene (CDS)": {
                 kind: "bed",
@@ -1382,6 +1394,7 @@ ORDER BY a.chrom, a.start, a."end"
                                 <select class="form-select hyp-test" id="hypothesis-secondary-${idx}">
                                     <option selected>Centromeres</option>
                                     <option>Canonical gene (whole)</option>
+                                    <option>Canonical gene (exon, protein-coding)</option>
                                     <option>Canonical gene (exon)</option>
                                     <option>Canonical gene (CDS)</option>
                                 </select>
@@ -1592,6 +1605,8 @@ ORDER BY a.chrom, a.start, a."end"
             $(`#hypothesis-secondary-wrapper-${idx}`).prop("hidden", false);
             if (secondary == "Centromeres") {
                 str = `Measure how much of the bundled centromere annotation is hit or base-covered by ${filename}.`;
+            } else if (secondary == "Canonical gene (exon, protein-coding)") {
+                str = `Measure protein-coding exon hit rate, protein-coding exon base coverage, and export covered or uncovered coding-exon loci for ${filename}.`;
             } else if (secondary == "Canonical gene (exon)") {
                 str = `Measure exon hit rate, exon base coverage, and export covered or uncovered exon loci for ${filename}.`;
             } else if (secondary == "Canonical gene (CDS)") {
