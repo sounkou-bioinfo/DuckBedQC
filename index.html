@@ -1356,6 +1356,28 @@ clinvar_norm AS (
     ${normalize_join_chromosome_expr("c.chrom")} AS norm_chrom
   FROM ${clinvarTable} c
 ),
+clinvar_shape AS (
+  SELECT
+    c.*,
+    trim(split_part(coalesce(c.ref, ''), ',', 1)) AS ref_first,
+    trim(split_part(coalesce(c.alt, ''), ',', 1)) AS alt_first
+  FROM clinvar_norm c
+),
+clinvar_typed AS (
+  SELECT
+    c.*,
+    CASE
+      WHEN left(c.ref_first, 1) = '[' AND right(c.ref_first, 1) = ']' AND length(c.ref_first) >= 2
+        THEN substr(c.ref_first, 2, length(c.ref_first) - 2)
+      ELSE c.ref_first
+    END AS ref_norm,
+    CASE
+      WHEN left(c.alt_first, 1) = '[' AND right(c.alt_first, 1) = ']' AND length(c.alt_first) >= 2
+        THEN substr(c.alt_first, 2, length(c.alt_first) - 2)
+      ELSE c.alt_first
+    END AS alt_norm
+  FROM clinvar_shape c
+),
 uncovered_norm AS (
   SELECT
     u.*,
@@ -1371,8 +1393,11 @@ SELECT
   c.ref,
   c.alt,
   CASE
-    WHEN c.alt LIKE '<%>' OR c.alt LIKE '%[%]%' OR c.alt LIKE '%]%' THEN 'SV'
-    WHEN greatest(length(coalesce(c.ref, '')), length(coalesce(c.alt, ''))) < 50 THEN 'SNV'
+    WHEN c.ref_norm = '' OR c.alt_norm = '' THEN 'SV'
+    WHEN left(c.alt_norm, 1) = '<' AND right(c.alt_norm, 1) = '>' THEN 'SV'
+    WHEN strpos(c.alt_norm, ':') > 0 THEN 'SV'
+    WHEN strpos(c.alt_norm, '[') > 0 OR strpos(c.alt_norm, ']') > 0 THEN 'SV'
+    WHEN greatest(length(c.ref_norm), length(c.alt_norm)) < 50 THEN 'SNV'
     ELSE 'SV'
   END AS variant_type,
   c.clnsig,
@@ -1380,7 +1405,7 @@ SELECT
   c.condition,
   c.gene_info
 FROM uncovered_norm u
-INNER JOIN clinvar_norm c
+INNER JOIN clinvar_typed c
   ON u.norm_chrom = c.norm_chrom
  AND u.start < c.end_pos
  AND c.pos - 1 < u."end"
