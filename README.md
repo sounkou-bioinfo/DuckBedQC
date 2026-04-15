@@ -61,6 +61,11 @@ prioritize uncovered intervals with potential medical relevance.
   - `*_uncovered_with_clinvar.tsv`
   - `*_clinvar_summary.tsv`
 
+`*_uncovered_with_clinvar.tsv` includes a `variant_type` column:
+
+- `SNV`: max(`length(REF)`, `length(ALT)`) < 50 bp
+- `SV`: symbolic/breakend ALT or allele length >= 50 bp
+
 Live mode depends on runtime HTTPS access and indexed range retrieval in the browser.
 
 ClinVar INFO fields can be scalar or list-typed depending on source headers; the

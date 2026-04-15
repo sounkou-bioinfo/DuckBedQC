@@ -1370,6 +1370,11 @@ SELECT
   c.clinvar_id,
   c.ref,
   c.alt,
+  CASE
+    WHEN c.alt LIKE '<%>' OR c.alt LIKE '%[%]%' OR c.alt LIKE '%]%' THEN 'SV'
+    WHEN greatest(length(coalesce(c.ref, '')), length(coalesce(c.alt, ''))) < 50 THEN 'SNV'
+    ELSE 'SV'
+  END AS variant_type,
   c.clnsig,
   c.review_status,
   c.condition,
