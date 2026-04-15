@@ -1295,6 +1295,7 @@ FROM hits
         track,
         totals,
         summaryRows,
+        intervalStatsRows,
     }) => {
         const intervalFraction = totals.annotation_interval_count > 0
             ? totals.overlapped_interval_count / totals.annotation_interval_count
@@ -1314,6 +1315,51 @@ FROM hits
                 <td class="num">${format_percent(row.covered_base_fraction)}</td>
             </tr>
         `).join("");
+
+        const intervalRows = (intervalStatsRows || []).slice().sort((a, b) => sort_alphanum(a.chr, b.chr));
+        const intervalRowHtml = intervalRows.map((row) => `
+            <tr>
+                <td>${escape_html(row.chr)}</td>
+                <td class="num">${escape_html(row.min)}</td>
+                <td class="num">${escape_html(row.q05)}</td>
+                <td class="num">${escape_html(row.q10)}</td>
+                <td class="num">${escape_html(row.q25)}</td>
+                <td class="num">${escape_html(row.median)}</td>
+                <td class="num">${escape_html(row.q75)}</td>
+                <td class="num">${escape_html(row.q90)}</td>
+                <td class="num">${escape_html(row.q95)}</td>
+                <td class="num">${escape_html(row.max)}</td>
+                <td class="num">${escape_html(row.mean)}</td>
+                <td class="num">${escape_html(row.mode)}</td>
+            </tr>
+        `).join("");
+        const intervalStatsSection = intervalRows.length > 0
+            ? `
+  <h2>Interval Length Statistics (Input BED)</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Chromosome</th>
+        <th class="num">Min</th>
+        <th class="num">Q05</th>
+        <th class="num">Q10</th>
+        <th class="num">Q25</th>
+        <th class="num">Median</th>
+        <th class="num">Q75</th>
+        <th class="num">Q90</th>
+        <th class="num">Q95</th>
+        <th class="num">Max</th>
+        <th class="num">Mean</th>
+        <th class="num">Mode</th>
+      </tr>
+    </thead>
+    <tbody>${intervalRowHtml}</tbody>
+  </table>
+`
+            : `
+  <h2>Interval Length Statistics (Input BED)</h2>
+  <div class="note">Interval statistics are unavailable for this run.</div>
+`;
 
         return `<!doctype html>
 <html lang="en">
@@ -1374,6 +1420,7 @@ FROM hits
     </thead>
     <tbody>${rowHtml}</tbody>
   </table>
+  ${intervalStatsSection}
   <div class="note">Coordinates and overlap logic follow DuckBedQC in-browser DuckDB calculations.</div>
 </body>
 </html>`;
@@ -1389,6 +1436,7 @@ FROM hits
             track,
             totals,
             summaryRows,
+            intervalStatsRows: global_data.interval_stats_rows || [],
         });
         const base = `${sanitize_filename_token(uploadedBed.replace(/\.bed$/i, ""))}_${genome}_${sanitize_track_slug(track)}_report`;
         download_text_file(html, `${base}.html`, "text/html;charset=utf-8");
@@ -1404,6 +1452,7 @@ FROM hits
             track,
             totals,
             summaryRows,
+            intervalStatsRows: global_data.interval_stats_rows || [],
         });
         const win = open_printable_html_report(html);
         if (!win) {
@@ -2360,6 +2409,7 @@ FROM hits
                                     mode: math.mode(lengths)[0],
                                 });
                             }
+                            global_data.interval_stats_rows = chr_intervals;
                             build_table(chr_intervals);
 
                             bed.sort((a, b) => (a[1] > b[1] ? 1 : a[1] < b[1] ? -1 : 0));
@@ -2471,6 +2521,7 @@ FROM hits
             user_bed_error: null,
             user_bed_staged: false,
             overlap_cache: {},
+            interval_stats_rows: [],
         };
 
         if (global_data.file_obj) {

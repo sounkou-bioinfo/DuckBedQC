@@ -46,7 +46,7 @@ For annotation overlap analyses, DuckBedQC can export:
 - report PDF (`Export report PDF`, via browser print/save flow)
 
 The report includes genome build, annotation track, interval/base coverage summary,
-and per-chromosome coverage table.
+per-chromosome coverage table, and input BED interval length statistics.
 
 ## Live ClinVar for uncovered intervals
 
