@@ -67,6 +67,9 @@ ClinVar INFO fields can be scalar or list-typed depending on source headers; the
 live query path normalizes key ClinVar fields to `VARCHAR` text before
 pathogenicity matching to keep browser DuckDB binding stable.
 
+To avoid one-query-per-interval overhead, the live ClinVar loader groups uncovered
+contig windows into batched region queries and appends results incrementally.
+
 ## Canonical annotation assets
 
 Canonical assets in `data/GRCh37_*.bed` and `data/GRCh38_*.bed` are generated from

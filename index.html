@@ -1157,33 +1157,15 @@ ORDER BY a.chrom, a.start, a."end"
         return stripped;
     };
 
-    const load_live_clinvar_regions = async ({ genome, regions, tableName }) => {
-        const source = clinvarSources[genome];
-        if (!source) {
-            throw new Error(`No ClinVar source configured for genome ${genome}`);
+    const chunk_array = (values, size) => {
+        const out = [];
+        for (let i = 0; i < values.length; i += size) {
+            out.push(values.slice(i, i + size));
         }
-        if (!regions.length) {
-            await execute_sql(`
-CREATE OR REPLACE TABLE ${tableName} AS
-SELECT
-  CAST(NULL AS VARCHAR) AS chrom,
-  CAST(NULL AS BIGINT) AS pos,
-  CAST(NULL AS BIGINT) AS end_pos,
-  CAST(NULL AS VARCHAR) AS clinvar_id,
-  CAST(NULL AS VARCHAR) AS ref,
-  CAST(NULL AS VARCHAR) AS alt,
-  CAST(NULL AS VARCHAR) AS clnsig,
-  CAST(NULL AS VARCHAR) AS review_status,
-  CAST(NULL AS VARCHAR) AS condition,
-  CAST(NULL AS VARCHAR) AS gene_info,
-  CAST(0 AS INTEGER) AS is_pathogenic_like,
-  CAST(0 AS INTEGER) AS is_likely_pathogenic
-WHERE FALSE
-`);
-            return;
-        }
+        return out;
+    };
 
-        const unionSql = regions.map((region) => `
+    const build_live_clinvar_region_select_sql = (source, region) => `
 SELECT
   CHROM AS chrom,
   POS AS pos,
@@ -1219,9 +1201,42 @@ FROM (
     index_path := '${escape_r_string(source.indexUrl)}'
   )
 )
-`).join("\nUNION ALL\n");
+`;
 
-        await execute_sql(`CREATE OR REPLACE TABLE ${tableName} AS ${unionSql}`);
+    const load_live_clinvar_regions = async ({ genome, regions, tableName }) => {
+        const source = clinvarSources[genome];
+        if (!source) {
+            throw new Error(`No ClinVar source configured for genome ${genome}`);
+        }
+        await execute_sql(`
+CREATE OR REPLACE TABLE ${tableName} AS
+SELECT
+  CAST(NULL AS VARCHAR) AS chrom,
+  CAST(NULL AS BIGINT) AS pos,
+  CAST(NULL AS BIGINT) AS end_pos,
+  CAST(NULL AS VARCHAR) AS clinvar_id,
+  CAST(NULL AS VARCHAR) AS ref,
+  CAST(NULL AS VARCHAR) AS alt,
+  CAST(NULL AS VARCHAR) AS clnsig,
+  CAST(NULL AS VARCHAR) AS review_status,
+  CAST(NULL AS VARCHAR) AS condition,
+  CAST(NULL AS VARCHAR) AS gene_info,
+  CAST(0 AS INTEGER) AS is_pathogenic_like,
+  CAST(0 AS INTEGER) AS is_likely_pathogenic
+WHERE FALSE
+`);
+        if (!regions.length) {
+            return;
+        }
+
+        const batchSize = 24;
+        const batches = chunk_array(regions, batchSize);
+        for (let i = 0; i < batches.length; i += 1) {
+            const batch = batches[i];
+            update_operation_detail(`Querying live ClinVar batch ${i + 1}/${batches.length} (${batch.length} windows)...`);
+            const batchSql = batch.map((region) => build_live_clinvar_region_select_sql(source, region)).join("\nUNION ALL\n");
+            await execute_sql(`INSERT INTO ${tableName} ${batchSql}`);
+        }
     };
 
     const normalize_clinvar_summary_row = (row, genome, track) => ({
