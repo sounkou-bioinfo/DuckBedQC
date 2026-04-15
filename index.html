@@ -913,6 +913,44 @@ utils::write.table(
 
     const sanitize_track_slug = (track) => track.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 
+    const escape_html = (value) => String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+
+    const sanitize_filename_token = (value) => String(value ?? "")
+        .replace(/[^a-zA-Z0-9._-]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+
+    const get_uploaded_filename = () => {
+        if (typeof global_data.file_obj === "string" || global_data.file_obj instanceof String) {
+            return String(global_data.file_obj).split(/[\\/]/).pop() || "input.bed";
+        }
+        return global_data.file_obj?.name || "input.bed";
+    };
+
+    const download_text_file = (content, filename, mimeType = "text/plain;charset=utf-8") => {
+        const blob = new Blob([content], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+
+    const open_printable_html_report = (htmlContent) => {
+        const blob = new Blob([htmlContent], { type: "text/html;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const win = window.open(url, "_blank", "noopener,noreferrer");
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+        return win;
+    };
+
     const format_integer = (value) => Number(value || 0).toLocaleString();
 
     const format_percent = (fraction) => `${(100 * Number(fraction || 0)).toFixed(2)}%`;
@@ -1018,6 +1056,129 @@ ORDER BY a.chrom, a.start, a."end"
             overlappingPath,
             uncoveredPath,
         };
+    };
+
+    const build_report_html_document = ({
+        generatedAtIso,
+        uploadedBed,
+        genome,
+        track,
+        totals,
+        summaryRows,
+    }) => {
+        const intervalFraction = totals.annotation_interval_count > 0
+            ? totals.overlapped_interval_count / totals.annotation_interval_count
+            : 0;
+        const baseFraction = totals.annotation_base_count > 0
+            ? totals.covered_base_count / totals.annotation_base_count
+            : 0;
+
+        const rowHtml = summaryRows.map((row) => `
+            <tr>
+                <td>${escape_html(row.chrom)}</td>
+                <td class="num">${format_integer(row.annotation_interval_count)}</td>
+                <td class="num">${format_integer(row.overlapped_interval_count)}</td>
+                <td class="num">${format_percent(row.overlapped_interval_fraction)}</td>
+                <td class="num">${format_integer(row.annotation_base_count)}</td>
+                <td class="num">${format_integer(row.covered_base_count)}</td>
+                <td class="num">${format_percent(row.covered_base_fraction)}</td>
+            </tr>
+        `).join("");
+
+        return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>DuckBedQC Report</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: "Georgia", "Times New Roman", serif; color: #1c1c1c; margin: 24px; }
+    h1, h2 { margin: 0 0 10px 0; }
+    h1 { font-size: 26px; }
+    h2 { font-size: 18px; margin-top: 18px; }
+    .meta { font-size: 14px; margin-bottom: 16px; }
+    .meta div { margin: 2px 0; }
+    .cards { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 10px; margin: 14px 0 18px 0; }
+    .card { border: 1px solid #b9c7d8; border-radius: 6px; padding: 10px 12px; background: #f8fbff; }
+    .label { font-size: 12px; color: #4b5a6a; text-transform: uppercase; letter-spacing: 0.03em; }
+    .value { font-size: 21px; font-weight: 700; }
+    .sub { font-size: 12px; color: #5d6d7d; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border: 1px solid #d2dde8; padding: 6px 8px; }
+    th { background: #eaf2fb; text-align: left; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .note { margin-top: 12px; font-size: 12px; color: #5d6d7d; }
+    @media print {
+      body { margin: 12mm; }
+      .no-print { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="no-print" style="margin-bottom:12px;"><button onclick="window.print()">Print / Save as PDF</button></div>
+  <h1>DuckBedQC Annotation Coverage Report</h1>
+  <div class="meta">
+    <div><strong>Generated:</strong> ${escape_html(generatedAtIso)}</div>
+    <div><strong>Uploaded BED:</strong> ${escape_html(uploadedBed)}</div>
+    <div><strong>Genome:</strong> ${escape_html(genome)}</div>
+    <div><strong>Annotation:</strong> ${escape_html(track)}</div>
+  </div>
+  <div class="cards">
+    <div class="card"><div class="label">Annotation intervals hit</div><div class="value">${format_percent(intervalFraction)}</div><div class="sub">${format_integer(totals.overlapped_interval_count)} / ${format_integer(totals.annotation_interval_count)}</div></div>
+    <div class="card"><div class="label">Annotation bases covered</div><div class="value">${format_percent(baseFraction)}</div><div class="sub">${format_integer(totals.covered_base_count)} / ${format_integer(totals.annotation_base_count)} bp</div></div>
+    <div class="card"><div class="label">Annotation intervals total</div><div class="value">${format_integer(totals.annotation_interval_count)}</div></div>
+    <div class="card"><div class="label">Annotation bases total</div><div class="value">${format_integer(totals.annotation_base_count)}</div></div>
+  </div>
+  <h2>Per-Chromosome Summary</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Chromosome</th>
+        <th class="num">Intervals</th>
+        <th class="num">Intervals hit</th>
+        <th class="num">Interval hit %</th>
+        <th class="num">Bases</th>
+        <th class="num">Bases covered</th>
+        <th class="num">Base coverage %</th>
+      </tr>
+    </thead>
+    <tbody>${rowHtml}</tbody>
+  </table>
+  <div class="note">Coordinates and overlap logic follow DuckBedQC in-browser DuckDB calculations.</div>
+</body>
+</html>`;
+    };
+
+    const export_annotation_report_html = ({ genome, track, totals, summaryRows }) => {
+        const uploadedBed = get_uploaded_filename();
+        const generatedAtIso = new Date().toISOString();
+        const html = build_report_html_document({
+            generatedAtIso,
+            uploadedBed,
+            genome,
+            track,
+            totals,
+            summaryRows,
+        });
+        const base = `${sanitize_filename_token(uploadedBed.replace(/\.bed$/i, ""))}_${genome}_${sanitize_track_slug(track)}_report`;
+        download_text_file(html, `${base}.html`, "text/html;charset=utf-8");
+    };
+
+    const export_annotation_report_pdf = ({ genome, track, totals, summaryRows }) => {
+        const uploadedBed = get_uploaded_filename();
+        const generatedAtIso = new Date().toISOString();
+        const html = build_report_html_document({
+            generatedAtIso,
+            uploadedBed,
+            genome,
+            track,
+            totals,
+            summaryRows,
+        });
+        const win = open_printable_html_report(html);
+        if (!win) {
+            alert("Popup blocked. Allow popups for this site to export PDF.");
+        }
     };
 
     const sort_alphanum = (a, b) => a.localeCompare(b, "en", { numeric: true });
@@ -1286,6 +1447,8 @@ ORDER BY a.chrom, a.start, a."end"
                     <div class="row pb-3">
                         <div class="col-12 d-flex flex-wrap gap-2">
                             <button type="button" class="btn btn-outline-secondary btn-sm" id="hypothesis-${idx}-download-summary">Download summary TSV</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="hypothesis-${idx}-download-report-html">Download report HTML</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" id="hypothesis-${idx}-download-report-pdf">Export report PDF</button>
                             <button type="button" class="btn btn-outline-secondary btn-sm" id="hypothesis-${idx}-download-overlapping">Download overlapping annotation BED</button>
                             <button type="button" class="btn btn-outline-secondary btn-sm" id="hypothesis-${idx}-download-uncovered">Download uncovered annotation BED</button>
                         </div>
@@ -1306,6 +1469,12 @@ ORDER BY a.chrom, a.start, a."end"
 
         document.getElementById(`hypothesis-${idx}-download-summary`).addEventListener("click", () => {
             void download_webr_file(coverage.summaryPath, `${genome}_${sanitize_track_slug(track)}_annotation_summary.tsv`, "text/tab-separated-values;charset=utf-8");
+        });
+        document.getElementById(`hypothesis-${idx}-download-report-html`).addEventListener("click", () => {
+            export_annotation_report_html({ genome, track, totals, summaryRows: perChromRows });
+        });
+        document.getElementById(`hypothesis-${idx}-download-report-pdf`).addEventListener("click", () => {
+            export_annotation_report_pdf({ genome, track, totals, summaryRows: perChromRows });
         });
         document.getElementById(`hypothesis-${idx}-download-overlapping`).addEventListener("click", () => {
             void download_webr_file(coverage.overlappingPath, `${genome}_${sanitize_track_slug(track)}_overlapping.bed`);

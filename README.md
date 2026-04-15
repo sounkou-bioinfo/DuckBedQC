@@ -38,6 +38,16 @@ For canonical tracks, `name` is:
 
 Coordinates use standard BED semantics: 0-based `start`, half-open `end`.
 
+## Report export
+
+For annotation overlap analyses, DuckBedQC can export:
+
+- report HTML (`Download report HTML`)
+- report PDF (`Export report PDF`, via browser print/save flow)
+
+The report includes genome build, annotation track, interval/base coverage summary,
+and per-chromosome coverage table.
+
 ## Canonical annotation assets
 
 Canonical assets in `data/GRCh37_*.bed` and `data/GRCh38_*.bed` are generated from
