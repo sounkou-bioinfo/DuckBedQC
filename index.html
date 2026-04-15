@@ -1791,6 +1791,24 @@ ORDER BY a.chrom, a.start, a."end"
         $("#button-alert").prop("hidden", false);
     };
 
+    const percentile_linear = (values, p) => {
+        if (!Array.isArray(values) || values.length === 0) {
+            return 0;
+        }
+        const sorted = values.slice().sort((a, b) => a - b);
+        if (sorted.length === 1) {
+            return sorted[0];
+        }
+        const rank = (sorted.length - 1) * p;
+        const lower = Math.floor(rank);
+        const upper = Math.ceil(rank);
+        if (lower === upper) {
+            return sorted[lower];
+        }
+        const weight = rank - lower;
+        return sorted[lower] * (1 - weight) + sorted[upper] * weight;
+    };
+
     let global_data = {};
 
     const build_table = (arr) => {
@@ -1816,9 +1834,15 @@ ORDER BY a.chrom, a.start, a."end"
         let cols = [
             { data: "chr", title: "Chromosome", render: $.fn.dataTable.render.text() },
             { data: "min", title: "Minimum", render: $.fn.dataTable.number },
+            { data: "q05", title: "Q05", render: $.fn.dataTable.number },
+            { data: "q10", title: "Q10", render: $.fn.dataTable.number },
+            { data: "q25", title: "Q25", render: $.fn.dataTable.number },
             { data: "max", title: "Maximum", render: $.fn.dataTable.number },
             { data: "mean", title: "Mean", render: $.fn.dataTable.number },
             { data: "median", title: "Median", render: $.fn.dataTable.number },
+            { data: "q75", title: "Q75", render: $.fn.dataTable.number },
+            { data: "q90", title: "Q90", render: $.fn.dataTable.number },
+            { data: "q95", title: "Q95", render: $.fn.dataTable.number },
             { data: "mode", title: "Mode", render: $.fn.dataTable.number },
         ];
 
@@ -2011,9 +2035,15 @@ ORDER BY a.chrom, a.start, a."end"
                                 chr_intervals.push({
                                     chr: chrom,
                                     min: math.min(lengths),
+                                    q05: percentile_linear(lengths, 0.05).toFixed(2),
+                                    q10: percentile_linear(lengths, 0.10).toFixed(2),
+                                    q25: percentile_linear(lengths, 0.25).toFixed(2),
                                     max: math.max(lengths),
                                     mean: math.mean(lengths).toFixed(2),
                                     median: math.median(lengths).toFixed(2),
+                                    q75: percentile_linear(lengths, 0.75).toFixed(2),
+                                    q90: percentile_linear(lengths, 0.90).toFixed(2),
+                                    q95: percentile_linear(lengths, 0.95).toFixed(2),
                                     mode: math.mode(lengths)[0],
                                 });
                             }
