@@ -161,3 +161,9 @@ The browser SQL backend uses:
 - [webR](https://docs.r-wasm.org/webr/latest/)
 - [DuckDB](https://duckdb.org/)
 - [Rduckhts](https://github.com/RGenomicsETL/duckhts)
+
+Repository links:
+
+- DuckBedQC fork: <https://github.com/sounkou-bioinfo/DuckBedQC>
+- Original quinlab bedqc: <https://github.com/quinlan-lab/bedqc>
+- Original quinlab bedqc-app: <https://github.com/quinlan-lab/bedqc-app>
