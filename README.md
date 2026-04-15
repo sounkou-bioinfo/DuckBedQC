@@ -79,6 +79,26 @@ Regenerate with:
 python3 data/build_canonical_annotations.py
 ```
 
+## CMRG benchmark annotations
+
+DuckBedQC includes CMRG gene coordinate BEDs for both hg19/GRCh37 and hg38/GRCh38:
+
+- `CMRG benchmark genes`
+- `CMRG full genes`
+- `CMRG full exons`
+- `CMRG genes + flank`
+
+Source repository:
+
+- `https://github.com/usnistgov/cmrg-benchmarkset-manuscript`
+- Path used: `data/gene_coords/unsorted/*.bed`
+
+Paper citation:
+
+- Wagner J, Olson ND, Harris L, et al. *Towards a Comprehensive Variation
+  Benchmark for Challenging Medically-Relevant Autosomal Genes*. bioRxiv.
+  2021.06.07.444885. doi: `10.1101/2021.06.07.444885`.
+
 [BED file specification](https://samtools.github.io/hts-specs/BEDv1.pdf).
 
 The browser SQL backend uses:

@@ -502,6 +502,30 @@ ORDER BY norm_chrom, start, "end"
                 url: "data/GRCh38_cds.bed",
                 vfsPath: "/duckbedqc/data/GRCh38_cds.bed",
             },
+            "CMRG benchmark genes": {
+                kind: "bed",
+                tableName: "annotation_hg38_cmrg_bench_gene",
+                url: "data/GRCh38_mrg_bench_gene.bed",
+                vfsPath: "/duckbedqc/data/GRCh38_mrg_bench_gene.bed",
+            },
+            "CMRG full genes": {
+                kind: "bed",
+                tableName: "annotation_hg38_cmrg_full_gene",
+                url: "data/GRCh38_mrg_full_gene.bed",
+                vfsPath: "/duckbedqc/data/GRCh38_mrg_full_gene.bed",
+            },
+            "CMRG full exons": {
+                kind: "bed",
+                tableName: "annotation_hg38_cmrg_full_exon",
+                url: "data/GRCh38_mrg_full_exon.bed",
+                vfsPath: "/duckbedqc/data/GRCh38_mrg_full_exon.bed",
+            },
+            "CMRG genes + flank": {
+                kind: "bed",
+                tableName: "annotation_hg38_cmrg_gene_flank",
+                url: "data/GRCh38_mrg_full_gene-plus-flank.bed",
+                vfsPath: "/duckbedqc/data/GRCh38_mrg_full_gene-plus-flank.bed",
+            },
         },
         hg19: {
             Centromeres: {
@@ -533,6 +557,30 @@ ORDER BY norm_chrom, start, "end"
                 tableName: "annotation_hg19_genes_cds",
                 url: "data/GRCh37_cds.bed",
                 vfsPath: "/duckbedqc/data/GRCh37_cds.bed",
+            },
+            "CMRG benchmark genes": {
+                kind: "bed",
+                tableName: "annotation_hg19_cmrg_bench_gene",
+                url: "data/GRCh37_mrg_bench_gene.bed",
+                vfsPath: "/duckbedqc/data/GRCh37_mrg_bench_gene.bed",
+            },
+            "CMRG full genes": {
+                kind: "bed",
+                tableName: "annotation_hg19_cmrg_full_gene",
+                url: "data/GRCh37_mrg_full_gene.bed",
+                vfsPath: "/duckbedqc/data/GRCh37_mrg_full_gene.bed",
+            },
+            "CMRG full exons": {
+                kind: "bed",
+                tableName: "annotation_hg19_cmrg_full_exon",
+                url: "data/GRCh37_mrg_full_exon.bed",
+                vfsPath: "/duckbedqc/data/GRCh37_mrg_full_exon.bed",
+            },
+            "CMRG genes + flank": {
+                kind: "bed",
+                tableName: "annotation_hg19_cmrg_gene_flank",
+                url: "data/GRCh37_mrg_full_gene-plus-flank.bed",
+                vfsPath: "/duckbedqc/data/GRCh37_mrg_full_gene-plus-flank.bed",
             },
         },
     };
@@ -1928,6 +1976,10 @@ FROM hits
                                     <option>Canonical gene (exon, protein-coding)</option>
                                     <option>Canonical gene (exon)</option>
                                     <option>Canonical gene (CDS)</option>
+                                    <option>CMRG benchmark genes</option>
+                                    <option>CMRG full genes</option>
+                                    <option>CMRG full exons</option>
+                                    <option>CMRG genes + flank</option>
                                 </select>
                                 <label for="hypothesis-secondary-${idx}">Annotation</label>
                             </div>
@@ -2142,6 +2194,8 @@ FROM hits
                 str = `Measure exon hit rate, exon base coverage, and export covered or uncovered exon loci for ${filename}.`;
             } else if (secondary == "Canonical gene (CDS)") {
                 str = `Measure CDS hit rate, CDS base coverage, and export covered or uncovered CDS loci for ${filename}.`;
+            } else if (secondary.startsWith("CMRG")) {
+                str = `Measure coverage against the bundled ${genome} CMRG annotation track (${secondary}) for ${filename}.`;
             } else {
                 str = `Measure whole-gene locus hit rate and base coverage for ${filename} against the bundled ${genome} annotation.`;
             }
