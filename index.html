@@ -526,6 +526,18 @@ ORDER BY norm_chrom, start, "end"
                 url: "data/GRCh38_mrg_full_gene-plus-flank.bed",
                 vfsPath: "/duckbedqc/data/GRCh38_mrg_full_gene-plus-flank.bed",
             },
+            "Illumina Clinical Regions (v100.39.0+)": {
+                kind: "bed",
+                tableName: "annotation_hg38_illumina_clinical_regions",
+                url: "data/GRCh38_illumina_clinical_regions_v100.39.0.bed",
+                vfsPath: "/duckbedqc/data/GRCh38_illumina_clinical_regions_v100.39.0.bed",
+            },
+            "Illumina Full Genes (v100.39.0+)": {
+                kind: "bed",
+                tableName: "annotation_hg38_illumina_full_genes",
+                url: "data/GRCh38_illumina_full_genes_v100.39.0.bed",
+                vfsPath: "/duckbedqc/data/GRCh38_illumina_full_genes_v100.39.0.bed",
+            },
         },
         hg19: {
             Centromeres: {
@@ -581,6 +593,18 @@ ORDER BY norm_chrom, start, "end"
                 tableName: "annotation_hg19_cmrg_gene_flank",
                 url: "data/GRCh37_mrg_full_gene-plus-flank.bed",
                 vfsPath: "/duckbedqc/data/GRCh37_mrg_full_gene-plus-flank.bed",
+            },
+            "Illumina Clinical Regions (v100.39.0+)": {
+                kind: "bed",
+                tableName: "annotation_hg19_illumina_clinical_regions",
+                url: "data/GRCh37_illumina_clinical_regions_v100.39.0.bed",
+                vfsPath: "/duckbedqc/data/GRCh37_illumina_clinical_regions_v100.39.0.bed",
+            },
+            "Illumina Full Genes (v100.39.0+)": {
+                kind: "bed",
+                tableName: "annotation_hg19_illumina_full_genes",
+                url: "data/GRCh37_illumina_full_genes_v100.39.0.bed",
+                vfsPath: "/duckbedqc/data/GRCh37_illumina_full_genes_v100.39.0.bed",
             },
         },
     };
@@ -1167,22 +1191,35 @@ SELECT
   ID AS clinvar_id,
   REF AS ref,
   ALT AS alt,
-  coalesce(INFO_CLNSIG, '') AS clnsig,
-  coalesce(INFO_CLNREVSTAT, '') AS review_status,
-  coalesce(INFO_CLNDN, '') AS condition,
-  coalesce(INFO_GENEINFO, '') AS gene_info,
+  clnsig_text AS clnsig,
+  review_status_text AS review_status,
+  condition_text AS condition,
+  gene_info_text AS gene_info,
   CASE
-    WHEN upper(coalesce(INFO_CLNSIG, '')) LIKE '%PATHOGENIC%'
-     AND upper(coalesce(INFO_CLNSIG, '')) NOT LIKE '%LIKELY_PATHOGENIC%'
+    WHEN upper(clnsig_text) LIKE '%PATHOGENIC%'
+     AND upper(clnsig_text) NOT LIKE '%LIKELY_PATHOGENIC%'
     THEN 1
     ELSE 0
   END AS is_pathogenic_like,
-  CASE WHEN upper(coalesce(INFO_CLNSIG, '')) LIKE '%LIKELY_PATHOGENIC%' THEN 1 ELSE 0 END AS is_likely_pathogenic
-FROM read_bcf(
-  '${escape_r_string(source.vcfUrl)}',
-  region := '${escape_r_string(region)}',
-  index_path := '${escape_r_string(source.indexUrl)}'
-)`).join("\nUNION ALL\n");
+  CASE WHEN upper(clnsig_text) LIKE '%LIKELY_PATHOGENIC%' THEN 1 ELSE 0 END AS is_likely_pathogenic
+FROM (
+  SELECT
+    CHROM,
+    POS,
+    ID,
+    REF,
+    ALT,
+    coalesce(CAST(INFO_CLNSIG AS VARCHAR), '') AS clnsig_text,
+    coalesce(CAST(INFO_CLNREVSTAT AS VARCHAR), '') AS review_status_text,
+    coalesce(CAST(INFO_CLNDN AS VARCHAR), '') AS condition_text,
+    coalesce(CAST(INFO_GENEINFO AS VARCHAR), '') AS gene_info_text
+  FROM read_bcf(
+    '${escape_r_string(source.vcfUrl)}',
+    region := '${escape_r_string(region)}',
+    index_path := '${escape_r_string(source.indexUrl)}'
+  )
+)
+`).join("\nUNION ALL\n");
 
         await execute_sql(`CREATE OR REPLACE TABLE ${tableName} AS ${unionSql}`);
     };
@@ -1980,6 +2017,8 @@ FROM hits
                                     <option>CMRG full genes</option>
                                     <option>CMRG full exons</option>
                                     <option>CMRG genes + flank</option>
+                                    <option>Illumina Clinical Regions (v100.39.0+)</option>
+                                    <option>Illumina Full Genes (v100.39.0+)</option>
                                 </select>
                                 <label for="hypothesis-secondary-${idx}">Annotation</label>
                             </div>
@@ -2196,6 +2235,8 @@ FROM hits
                 str = `Measure CDS hit rate, CDS base coverage, and export covered or uncovered CDS loci for ${filename}.`;
             } else if (secondary.startsWith("CMRG")) {
                 str = `Measure coverage against the bundled ${genome} CMRG annotation track (${secondary}) for ${filename}.`;
+            } else if (secondary.startsWith("Illumina")) {
+                str = `Measure coverage against the bundled ${genome} Illumina ROI track (${secondary}) for ${filename}.`;
             } else {
                 str = `Measure whole-gene locus hit rate and base coverage for ${filename} against the bundled ${genome} annotation.`;
             }

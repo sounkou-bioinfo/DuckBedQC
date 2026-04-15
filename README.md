@@ -63,6 +63,10 @@ prioritize uncovered intervals with potential medical relevance.
 
 Live mode depends on runtime HTTPS access and indexed range retrieval in the browser.
 
+ClinVar INFO fields can be scalar or list-typed depending on source headers; the
+live query path normalizes key ClinVar fields to `VARCHAR` text before
+pathogenicity matching to keep browser DuckDB binding stable.
+
 ## Canonical annotation assets
 
 Canonical assets in `data/GRCh37_*.bed` and `data/GRCh38_*.bed` are generated from
@@ -98,6 +102,25 @@ Paper citation:
 - Wagner J, Olson ND, Harris L, et al. *Towards a Comprehensive Variation
   Benchmark for Challenging Medically-Relevant Autosomal Genes*. bioRxiv.
   2021.06.07.444885. doi: `10.1101/2021.06.07.444885`.
+
+## Illumina Emedgene ROI annotations
+
+DuckBedQC includes default Illumina Emedgene ROI BEDs (v100.39.0+) for both hg19
+and hg38:
+
+- `Illumina Clinical Regions (v100.39.0+)`
+- `Illumina Full Genes (v100.39.0+)`
+
+Files are sourced from Illumina help documentation page:
+
+- `https://help.emg.illumina.com/emedgene-analyze-manual/launching-analysis/creating_a_single_case/case-type-and-region-of-interest/genomic_regions_by_case_type#clinical-regions`
+
+Bundled filenames:
+
+- `data/GRCh37_illumina_clinical_regions_v100.39.0.bed`
+- `data/GRCh38_illumina_clinical_regions_v100.39.0.bed`
+- `data/GRCh37_illumina_full_genes_v100.39.0.bed`
+- `data/GRCh38_illumina_full_genes_v100.39.0.bed`
 
 [BED file specification](https://samtools.github.io/hts-specs/BEDv1.pdf).
 
